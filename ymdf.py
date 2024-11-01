@@ -4,7 +4,7 @@ from astropy.stats import sigma_clip
 from scipy.signal import savgol_filter
 
 import pandera
-from typing import Tuple, List
+from typing import Tuple, List, Optional, Any
 
 
 def findGaps(
@@ -53,10 +53,10 @@ def detrendSavGolUltraViolet(
 
     Parameters:
 
-    - `lightCurve`: light curve
-    - `gaps`: found gaps in series
+    - `lightCurve`: light curve;
+    - `gaps`: found gaps in series;
     - `windowLength`: number of datapoints for Savitzky-Golay filter, either
-    one value for entire light curve of piecewise for gaps
+    one value for entire light curve of piecewise for gaps.
     """
 
     maximumWindowLength = 5
@@ -73,10 +73,10 @@ def detrendSavGolUltraViolet(
             ))
         )
 
-    lightCurve["fluxDetrended"] = pandas.array(
+    lightCurve["fluxDetrended"] = numpy.array(
         [numpy.nan]*len(lightCurve.index), dtype=float
     )
-    lightCurve["fluxModel"] = pandas.array(
+    lightCurve["fluxModel"] = numpy.array(
         [numpy.nan]*len(lightCurve.index), dtype=float
     )
 
@@ -94,7 +94,7 @@ def detrendSavGolUltraViolet(
                 prwt = pandas.DataFrame([row], index=[index])
                 betweenGaps = pandas.concat([betweenGaps, prwt])
             elif index in outliers:
-                lightCurve.at[index, "detrended_flux"] = lightCurve.at[
+                lightCurve.at[index, "fluxDetrended"] = lightCurve.at[
                     index,
                     "flux"
                 ]
@@ -105,7 +105,7 @@ def detrendSavGolUltraViolet(
         if not betweenGaps.empty:
             betweenGaps["fluxDetrended"] = savgol_filter(
                 betweenGaps["flux"],
-                wl,
+                windowLength,
                 3,
                 mode="nearest"
             )
@@ -134,12 +134,254 @@ def detrendSavGolUltraViolet(
     return lightCurve
 
 
+def findIterativeMedian(
+    lightCurve: pandas.DataFrame,
+    gaps: List[Tuple[int, int]],
+    n: int = 30
+) -> pandas.DataFrame:
+    """
+    Find the iterative median value for a continuous observation period
+    using flare finding to identify outliers.
+
+    Parameters:
+
+    - `lightCurve`: light curve;
+    - `gaps`: found gaps in series;
+    - `n`: maximum number of iterations.
+    """
+
+    lightCurve["iterativeMedian"] = numpy.array(numpy.NaN, dtype=float)
+
+    for (le, ri) in gaps:
+        flux = lightCurve.iloc[le:ri]["fluxDetrended"].values
+        # find a median that is not skewed by outliers
+        good = sigma_clip(flux)
+        goodflux = flux[good]
+        for index, row in lightCurve.iterrows():
+            if index in range(le, ri + 1):
+                lightCurve.at[
+                    index,
+                    "iterativeMedian"
+                ] = numpy.nanmedian(goodflux)
+
+    return lightCurve
+
+
+def findFlaresInContObsPeriod(
+    flux,
+    median,
+    error,
+    sigma=None,
+    n1=3,
+    n2=2,
+    n3=3,
+    addtail=False,
+    tailthreshdiff=1.0,
+    fake=False
+) -> list[bool]:
+    """
+    The algorithm for local changes due to flares defined
+    by S. W. Chang et al. (2015), Eqn. 3a-d,
+    https://ui.adsabs.harvard.edu/abs/2015ApJ...814...35C/abstract
+
+    These equations were originally in magnitude units, i.e. smaller
+    values are increases in brightness. The signs have been changed, but
+    coefficients have not been adjusted to change from log(flux) to flux.
+
+    Parameters:
+
+    - `flux`: data to search over;
+    - `median`: median value of quiescent stellar flux;
+    - `error`: errors corresponding to data;
+    - `sigma`: local scatter of the flux. Array should be the same length
+    as the detrended flux array. If sigma is None, error is used instead;
+    - `n1`: how many times above `sigma` is required;
+    - `n2`: how many times above `sigma` and `error` is required
+    - `n3`: the number of consecutive points required to flag as a flare;
+    - `addtail`: optionally, add data points to the flares
+    with a lower threshold;
+    - `tailthreshdiff`: relaxes the detection threshold for datapoints
+    that are added to the decay tails of flare candidates. The `tailthreshdiff`
+    value is subtracted from `n1` and `n2` and should not be larger than
+    either of the two.
+    """
+    isFlare = numpy.zeros_like(flux, dtype="bool")
+
+    # If no local scatter characteristics are given, use formal error as sigma
+    if sigma is None:
+        sigma = error
+    T0 = flux - median  # excursion should be positive # "n0"
+    T1 = numpy.abs(flux - median) / sigma  # n1
+    T2 = numpy.abs(flux - median - error) / sigma  # n2
+
+    # print(
+    #     "\n".join((
+    #         f"- factor above standard deviation. n1 = {n1}",
+    #         f"- factor above standard deviation + uncertainty. n2 = {n2}",
+    #         f"- minimum number of consecutive data points for candidate, n3 = {n3}"
+    #     ))
+    # )
+
+    # apply thresholds n0-n2:
+    pass_thresholds = numpy.where((T0 > 0) & (T1 > n1) & (T2 > n2))
+
+    # array of indices where thresholds are exceeded:
+    is_pass_thresholds = numpy.zeros_like(flux)
+    is_pass_thresholds[pass_thresholds] = 1
+
+    # need to find cumulative number of points that pass_thresholds,
+    # counted in reverse,
+    # examples:
+    # reverse_counts = [0 0 0 3 2 1 0 0 1 0 4 3 2 1 0 0 0 1 0 2 1 0]
+    #        isFlare = [0 0 0 1 1 1 0 0 0 0 1 1 1 1 0 0 0 0 0 0 0 0]
+
+    reverse_counts = numpy.zeros_like(flux, dtype="int")
+    for k in range(2, len(flux)):
+        reverse_counts[-k] = (
+            is_pass_thresholds[-k]
+            *
+            (
+                reverse_counts[-(k-1)]
+                +
+                is_pass_thresholds[-k]
+            )
+        )
+
+    # find flare start where values in reverse_counts switch from 0 to >=n3
+    istart_i = numpy.where(
+        (reverse_counts[1:] >= n3)
+        &
+        (reverse_counts[:-1] - reverse_counts[1:] < 0)
+    )[0] + 1
+
+    # use the value of reverse_counts to determine how many points away stop is
+    istop_i = istart_i + (reverse_counts[istart_i])
+
+    # add decay phase data point with a lower detection threshold
+    if addtail is True:
+        # check for bad values of tailthreshdiff
+        if ((tailthreshdiff > n1) | (tailthreshdiff > n2)):
+            raise ValueError(
+                " ".join((
+                    "The threshold on the decay tail should be > 0.",
+                    "Note that n1tail = n1-tailthreshdiff and the same for n2."
+                ))
+            )
+
+        # calculate new n1 and n2 for the tails
+        n1tail = n1 - tailthreshdiff
+        n2tail = n2 - tailthreshdiff
+
+        # add data points from tail until threshold no longer satisfied
+        newstops = []
+        for s in istop_i:
+            while ((T0[s] > 0) & (T1[s] > n1tail) & (T2[s] > n2tail)):
+                s += 1
+            newstops.append(s)
+
+        # overwrite old flare stop indices
+        istop_i = newstops
+
+    # Create boolean flare mask
+    isFlare = numpy.zeros_like(flux, dtype="bool")
+
+    for (l, r) in list(zip(istart_i, istop_i)):
+        isFlare[l:r+1] = True
+
+    return isFlare
+
+
+def chiSquare(residual, error):
+    """
+    Compute the normalized chi square statistic:
+    chisq = 1 / N * SUM(i) ((data(i) - model(i)) / error(i))^2
+    """
+    return (
+        numpy.sum((residual / error)**2.0)
+        /
+        numpy.size(error)
+    )
+
+
+def equivalentDuration(
+    lightCurve: pandas.DataFrame,
+    start: int,
+    stop: int,
+    error=False
+) -> int | Tuple[int, int]:
+    """
+    Returns the equivalent duration of a flare event found within
+    indices [start, stop], calculated as the area under
+    the residual (flux-flux_median).
+
+    Use only on detrended light curves.
+
+    Returns also the uncertainty on ED following Davenport (2016)
+
+    Parameters:
+
+    - `lightCurve`: flare light curve;
+    - `start`: start time index of a flare event;
+    - `stop`: end time index of a flare event;
+    - `error`: if true, then will compute uncertainty on ED.
+
+    Returns:
+
+    - `ed`: equivalent duration in seconds;
+    - `edError`: uncertainty in seconds.
+    """
+
+    start = int(start)
+    stop = int(stop)+1
+
+    lct = lightCurve.loc[start:stop]
+    residual = (
+        lct["fluxDetrended"].values
+        /
+        numpy.nanmedian(lct["iterativeMedian"].values)
+        -
+        1.0
+    )
+    x = lct["time"].values  # in seconds, add `* 60.0 * 60.0 * 24.0` for days
+    ed = numpy.sum(numpy.diff(x) * residual[:-1])
+
+    if error is True:
+        flare_chisq = chiSquare(
+            residual[:-1],
+            (
+                lct["fluxDetrended"].values[:-1]
+                /
+                numpy.nanmedian(lct["iterativeMedian"].values)
+            )
+        )
+        edError = numpy.sqrt(ed**2 / (stop-1-start) / flare_chisq)
+        return ed, edError
+    else:
+        return ed
+
+
 def findFlares(
     timeSeries: list[float],
     fluxSeries: list[float],
     fluxErrorSeries: list[float],
-    doPeriodicityRemoving: bool = False
+    doPeriodicityRemoving: bool = False,
+    minSep: int = 3,
+    sigma: Optional[list[float]] = None
 ) -> Tuple[pandas.DataFrame, pandas.DataFrame]:
+    """
+    Obtaining and processing a light curve.
+
+    Parameters:
+
+    - `timeSeries`: a list of time values;
+    - `fluxSeries`: a list of flux values;
+    - `fluxErrorSeries`: a list of fluxes errors;
+    - `doPeriodicityRemoving`: whether to remove periodicity or not;
+    - `minsep`: minimum distance between two candidate start times
+    in datapoints;
+    - `sigma`: local scatter of the flux. This array should be the same length
+    as the detrended flux array.
+    """
 
     seriesLength = len(timeSeries)
     if seriesLength != len(fluxSeries) or seriesLength != len(fluxErrorSeries):
@@ -165,15 +407,6 @@ def findFlares(
 
     # ---
 
-    gaps = findGaps(lightCurve, 30, 10)
-
-    # ---
-
-    detrendedLightCurve = detrendSavGolUltraViolet(lightCurve, gaps, 5)
-    print(detrendedLightCurve)
-
-    # ---
-
     flaresTableSchema = pandera.DataFrameSchema(
         {
             "istart": pandera.Column(int, nullable=True),
@@ -183,78 +416,114 @@ def findFlares(
 
     flares = pandas.DataFrame()
 
-    flares["istart"] = pandas.array([numpy.nan], dtype="Int64")
-    flares["istop"] = pandas.array([numpy.nan], dtype="Int64")
+    # ---
 
-    flaresTableSchema(flares)
+    gaps = findGaps(lightCurve, 30, 10)
 
     # ---
 
-    # if lc["detrended_flux"].isna().all():
-    #     raise TypeError('Flare finding only works on de-trended light curves.')
+    detrendedLightCurve = detrendSavGolUltraViolet(lightCurve, gaps, 5)
+    print(detrendedLightCurve)
 
-    # #Now work on periods of continuous observation with no gaps
-    # for (le,ri) in gaps:
-    #     error = lc.iloc[le:ri]["detrended_flux_err"].values
-    #     flux = lc.iloc[le:ri]["detrended_flux"].values
+    if detrendedLightCurve["fluxDetrended"].isna().all():
+        raise ValueError("Finding flares only works on detrended light curves")
 
-    #     median = lc.iloc[le:ri]["it_med"].values
+    # ---
 
-    #     time = lc.iloc[le:ri]['time']
-    #     # run final flare-find on DATA - MODEL
+    detrendedLightCurve = findIterativeMedian(detrendedLightCurve, gaps, 30)
 
-    #     if sigma is None:
-    #         isflare = find_flares_in_cont_obs_period(flux, median, error, **kwargs)
-    #     else:
-    #         isflare = find_flares_in_cont_obs_period(flux, median, error, sigma=sigma[le:ri], **kwargs)
+    # work on periods of continuous observation with no gaps
+    for (le, ri) in gaps:
+        error = detrendedLightCurve.iloc[le:ri]["error"].values
+        flux = detrendedLightCurve.iloc[le:ri]["fluxDetrended"].values
+        median = detrendedLightCurve.iloc[le:ri]["iterativeMedian"].values
+        time = detrendedLightCurve.iloc[le:ri]["time"]
 
+        # run final flare-find on DATA - MODEL
 
-    #     # now pick out final flare candidate indices
-    #     candidates = numpy.where( isflare > 0)[0]
-    #     if (len(candidates) < 1):#no candidates = no indices
-    #         LOG.debug(f'INFO: No candidates were found in the ({le},{ri}) gap.')
-    #         istart_gap = numpy.array([])
-    #         istop_gap = numpy.array([])
-    #     else:
-    #         # find start and stop index, combine neighboring candidates
-    #         # in to same events
-    #         separated_candidates = numpy.where( (numpy.diff(candidates)) > minsep )[0]
-    #         istart_gap = candidates[ numpy.append([0], separated_candidates + 1) ]
-    #         istop_gap = candidates[ numpy.append(separated_candidates,
-    #                                 [len(candidates) - 1]) ]
+        isFlare = None
+        if sigma is None:
+            isFlare = findFlaresInContObsPeriod(flux, median, error)
+        else:
+            isFlare = findFlaresInContObsPeriod(
+                flux,
+                median,
+                error,
+                sigma=sigma[le:ri]
+            )
 
-    #     #stitch indices back into the original light curve
-    #     istart = numpy.array(numpy.append(istart, istart_gap + le), dtype='int')
-    #     istop = numpy.array(numpy.append(istop, istop_gap + le), dtype='int')
-    #     LOG.info('Found {} candidate(s) in the ({},{}) gap.'
-    #              .format(len(istart_gap), le, ri))
+    # pick out final flare candidate indices
+    candidates = numpy.where(isFlare > 0)[0]
+    istart = None
+    istop = None
+    istartGap = numpy.array([])
+    istopGap = numpy.array([])
+    if len(candidates) > 0:
+        # find start and stop index, combine neighboring candidates
+        # in to same events
+        separatedCandidates = numpy.where(
+            (numpy.diff(candidates)) > minsep
+        )[0]
+        istartGap = candidates[
+            numpy.append([0], separatedCandidates + 1)
+        ]
+        istopGap = candidates[
+            numpy.append(separatedCandidates, [len(candidates) - 1])
+        ]
 
-    # if len(istart) > 0:
-    #     l = [equivalent_duration(lc, i, j, err=True) for (i,j) in zip(istart, istop)]
-    #     ed_rec, ed_rec_err = zip(*l)
-    #     fl = lc["detrended_flux"].values
-    #     ampl_rec = [numpy.max(fl[i:j]) / lc["it_med"].values[i] - 1. for (i,j) in zip(istart,istop)]
-    #     # cstart = lc.cadenceno[istart].value
-    #     # cstop = lc.cadenceno[istop].value
-    #     tstart = lc.iloc[istart]['time'].values
-    #     tstop = lc.iloc[istop]['time'].values
+        # stitch indices back into the original light curve
+        #
+        istart = numpy.array(
+            numpy.append(istart, istartGap + le), dtype="int"
+        )
+        flares["istart"] = istart
+        #
+        istop = numpy.array(
+            numpy.append(istop, istopGap + le), dtype="int"
+        )
+        flares["istop"] = istop
+        # print(f"Found {len(istartGap)} candidates in the ({le},{ri}) gap")
+    else:
+        print(f"No candidates were found in the ({le},{ri}) gap")
 
-    #     new = pd.DataFrame({'ed_rec': ed_rec,
-    #                        'ed_rec_err': ed_rec_err,
-    #                        'ampl_rec': ampl_rec,
-    #                        'istart': istart,
-    #                        'istop': istop,
-    #                        # 'cstart': cstart,
-    #                        # 'cstop': cstop,
-    #                        'tstart': tstart,
-    #                        'tstop': tstop,
-    #                        'total_n_valid_data_points': lc["flux"].values.shape[0],
-    #                        'dur': tstop - tstart
-    #                       })
+    if len(istart) > 0:
+        lst = [
+            equivalentDuration(detrendedLightCurve, i, j, error=True)
+            for (i, j) in zip(istart, istop)
+        ]
+        ed_rec, ed_rec_err = zip(*lst)
 
-    #     flares = pd.concat([flares, new], ignore_index=True)
+        fl = detrendedLightCurve["fluxDetrended"].values
+        ampl_rec = [
+            (
+                numpy.max(fl[i:j])
+                /
+                detrendedLightCurve["iterativeMedian"].values[i] - 1.
+            )
+            for (i, j) in zip(istart, istop)
+        ]
+        tstart = detrendedLightCurve.index[istart]
+        tstop = detrendedLightCurve.index[istop]
 
-    # return flares
+        newFlare = pd.DataFrame(
+            {
+                "ed_rec": ed_rec,
+                "ed_rec_err": ed_rec_err,
+                "ampl_rec": ampl_rec,
+                "istart": istart,
+                "istop": istop,
+                "tstart": tstart,
+                "tstop": tstop,
+                "total_n_valid_data_points": detrendedLightCurve["flux"].values.shape[0],
+                "dur": tstop - tstart
+              }
+          )
+
+        flares = pd.concat([flares, newFlare], ignore_index=True)
+
+    flaresTableSchema(flares)
+
+    return (detrendedLightCurve, flares)
 
 
 timeSeries = [1.0, 1.1, 1.2]
