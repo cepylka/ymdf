@@ -1,6 +1,7 @@
 import numpy
 import pandas
 from scipy.signal import savgol_filter
+from scipy.stats import binned_statistic
 import progressbar
 
 import pandera
@@ -39,6 +40,69 @@ def findGaps(
     right = numpy.delete(right, tooShort)
 
     return list(zip(left, right))
+
+
+def medSig(a):
+    """
+    Returns median and outlier-robust estimate of standard deviation
+    (1.48 x median of absolute deviations).
+
+    Adapted from K2SC (Aigrain et al. 2016).
+    """
+    lst = numpy.isfinite(a)
+    nfinite = lst.sum()
+    if nfinite == 0:
+        return numpy.nan, numpy.nan
+    if nfinite == 1:
+        return a[lst], numpy.nan
+    med = numpy.median(a[lst])
+    sig = 1.48 * numpy.median(numpy.abs(a[lst] - med))
+
+    return med, sig
+
+
+def expandMask(a, longdecay=1):
+    """
+    Expand the mask if multiple outliers occur in a row. Add
+    `sqrt(outliers in a row)` masked points before and after
+    the outlier sequence.
+
+    Parameters:
+
+    - `a`: mask;
+    - `longdecay`: optional parameter to expand the mask more by
+        this factor after the series of outliers.
+
+    Returns:
+
+    - `array`: expanded mask
+    """
+    i, j, k = 0, 0, 0
+
+    while i < len(a):
+        v = a[i]
+
+        if v == 0 and j == 0:
+            k += 1
+            j = 1
+            i += 1
+        elif v == 0 and j == 1:
+            k += 1
+            i += 1
+        elif v == 1 and j == 0:
+            i += 1
+        elif v == 1 and j == 1:
+            if k >= 2:
+                addto = int(numpy.rint(numpy.sqrt(k)))
+                a[i - k - addto:i - k] = 0
+                a[i:i + longdecay * addto] = 0
+                i += longdecay * addto
+            else:
+                i += 1
+            j = 0
+            k = 0
+
+    return a
 
 
 def sigmaClip(
@@ -91,7 +155,7 @@ def sigmaClip(
         nm = mask.sum()
         if nm > 1:
             # calculate median and MAD adjusted standard deviation
-            med, sig = medsig(a[mask])
+            med, sig = medSig(a[mask])
             # indices of okay values above median
             mhigh[mexc] = a[mexc] - med < max_sigma * sig
             # indices of okay values below median
@@ -101,7 +165,7 @@ def sigmaClip(
             mask = mexc & mhigh & mlow
 
             # expand the mask left and right
-            mhigh = expand_mask(mhigh)
+            mhigh = expandMask(mhigh)
 
             i += 1
 
@@ -109,69 +173,6 @@ def sigmaClip(
         return mlow, mhigh
     else:
         return mlow & mhigh
-
-
-def medsig(a):
-    """
-    Return median and outlier-robust estimate of standard deviation
-    (1.48 x median of absolute deviations).
-
-    Adapted from K2SC (Aigrain et al. 2016).
-    """
-    lst = numpy.isfinite(a)
-    nfinite = lst.sum()
-    if nfinite == 0:
-        return numpy.nan, numpy.nan
-    if nfinite == 1:
-        return a[lst], numpy.nan
-    med = numpy.median(a[lst])
-    sig = 1.48 * numpy.median(numpy.abs(a[lst] - med))
-
-    return med, sig
-
-
-def expand_mask(a, longdecay=1):
-    """
-    Expand the mask if multiple outliers occur in a row. Add
-    `sqrt(outliers in a row)` masked points before and after
-    the outlier sequence.
-
-    Parameters:
-
-    - `a`: mask;
-    - `longdecay`: optional parameter to expand the mask more by
-        this factor after the series of outliers.
-
-    Returns:
-
-    - `array`: expanded mask
-    """
-    i, j, k = 0, 0, 0
-
-    while i < len(a):
-        v = a[i]
-
-        if v == 0 and j == 0:
-            k += 1
-            j = 1
-            i += 1
-        elif v == 0 and j == 1:
-            k += 1
-            i += 1
-        elif v == 1 and j == 0:
-            i += 1
-        elif v == 1 and j == 1:
-            if k >= 2:
-                addto = int(numpy.rint(numpy.sqrt(k)))
-                a[i - k - addto:i - k] = 0
-                a[i:i + longdecay * addto] = 0
-                i += longdecay * addto
-            else:
-                i += 1
-            j = 0
-            k = 0
-
-    return a
 
 
 def detrendSavGolUltraViolet(
@@ -660,6 +661,418 @@ def findFlares(
     return (detrendedLightCurve, flares)
 
 
+def flareEqn(t, tpeak, fwhm, ampl):
+    """
+    The equation that defines the shape for the Continuous Flare Model
+    """
+
+    # values were fit and calculated using MCMC 256 walkers and 30000 steps
+    A, B, C, D1, D2, f1 = [
+        0.9687734504375167,
+        -0.251299705922117,
+        0.22675974948468916,
+        0.15551880775110513,
+        1.2150539528490194,
+        0.12695865022878844
+    ]
+
+    # we include the corresponding errors for each parameter
+    # from the MCMC analysis
+    A_err, B_err, C_err, D1_err, D2_err, f1_err = [
+        0.007941622683556804,
+        0.0004073709715788909,
+        0.0006863488251125649,
+        0.0013498012884345656,
+        0.00453458098656645,
+        0.001053149344530907
+    ]
+
+    f2 = 1 - f1
+
+    eqn = (
+        (
+            (1 / 2)
+            *
+            numpy.sqrt(numpy.pi)
+            *
+            A
+            *
+            C
+            *
+            f1
+            *
+            numpy.exp(-D1 * t + ((B / C) + (D1 * C / 2)) ** 2)
+            *
+            special.erfc(((B - t) / C) + (C * D1 / 2))
+        )
+        +
+        (
+            (1 / 2)
+            *
+            numpy.sqrt(numpy.pi)
+            *
+            A
+            *
+            C
+            *
+            f2
+            *
+            numpy.exp(-D2 * t+ ((B / C) + (D2 * C / 2)) ** 2)
+            *
+            special.erfc(((B - t) / C) + (C * D2 / 2))
+        )
+    )
+
+    return eqn * ampl
+
+
+def flareModelMendoza2022(t, tpeak, fwhm, ampl, upsample=False, uptime=10):
+    """
+    The Continuous Flare Model evaluated for single-peak (classical) flare
+    events. Use this function for fitting classical flares
+    with most curve_fit tools.
+
+    References:
+
+    - Tovar Mendoza et al. (2022) DOI 10.3847/1538-3881/ac6fe6
+    - Davenport et al. (2014) http://arxiv.org/abs/1411.3723
+    - Jackman et al. (2018) https://arxiv.org/abs/1804.03377
+
+    Parameters:
+
+    - `t`: the time array to evaluate the flare over;
+    - `tpeak`: the center time of the flare peak;
+    - `fwhm`: the Full Width at Half Maximum, timescale of the flare;
+    - `ampl`: The amplitude of the flare.
+
+    Returns:
+
+    - `flare`: the flux of the flare model evaluated at each time. A continuous
+    flare template whose shape is defined by the convolution of a Gaussian
+    and double exponential and can be parameterized by three parameters:
+    center time (tpeak), FWHM, and ampitude.
+    """
+
+    t_new = t-tpeak / fwhm
+
+    if upsample:
+        dt = numpy.nanmedian(numpy.diff(numpy.abs(t_new)))
+        timeup = numpy.linspace(
+            min(t_new) - dt,
+            max(t_new) + dt,
+            t_new.size * uptime
+        )
+
+        flareup = flareEqn(timeup, tpeak, fwhm, ampl)
+
+        # and now downsample back to the original time
+        downbins = numpy.concatenate(
+            (t_new - dt / 2.0, [max(t_new) + dt / 2.0])
+        )
+        flare = binned_statistic(
+            timeup,
+            flareup,
+            statistic="mean",
+            bins=numpy.sort(downbins)
+        )[0]
+    else:
+        flare = flareEqn(t_new, tpeak, fwhm, ampl)
+
+    return flare
+
+
+def flareModelDavenport2014(t, tpeak, dur, ampl, upsample=False, uptime=10):
+    """
+    The Analytic Flare Model evaluated for a single-peak (classical).
+    Reference: Davenport et al. (2014) http://arxiv.org/abs/1411.3723
+
+    Use this function for fitting classical flares with most curve_fit
+    tools.
+
+    Note, this model assumes the flux before the flare is zero centered.
+
+    Parameters:
+
+    - `t`: the time array to evaluate the flare over;
+    - `tpeak`: the time of the flare peak;
+    - `dur`: the duration of the flare;
+    - `ampl`: the amplitude of the flare;
+    - `upsample`: if `True`, then up-sample the model flare to ensure
+    more precise energies;
+    - `uptime`: how many times to up-sample the data.
+
+    Returns:
+
+    - `flare`: the flux of the flare model evaluated at each time.
+    """
+
+    _fr = [1.00000, 1.94053, -0.175084, -2.24588, -1.12498]
+    _fd = [0.689008, -1.60053, 0.302963, -0.278318]
+
+    fwhm = dur / 2.0  # crude approximation for a triangle shape
+
+    if upsample:
+        dt = numpy.nanmedian(numpy.diff(t))
+        timeup = numpy.linspace(min(t) - dt, max(t) + dt, t.size * uptime)
+
+        flareup = numpy.piecewise(
+            timeup,
+            [
+                (timeup <= tpeak) * (timeup-tpeak) / fwhm > -1.0,
+                (timeup > tpeak)
+            ],
+            [
+                lambda x: (
+                    _fr[0]  # 0th order
+                    +
+                    _fr[1] * ((x - tpeak) / fwhm)  # 1st order
+                    +
+                    _fr[2] * ((x - tpeak) / fwhm)**2.0  # 2nd order
+                    +
+                    _fr[3] * ((x - tpeak) / fwhm)**3.0  # 3rd order
+                    +
+                    _fr[4] * ((x - tpeak) / fwhm)**4.0  # 4th order
+                ),
+                lambda x: (
+                    _fd[0]
+                    *
+                    numpy.exp(((x - tpeak) / fwhm) * _fd[1])
+                    +
+                    _fd[2]
+                    *
+                    numpy.exp(((x - tpeak) / fwhm) * _fd[3])
+                )
+            ]
+        ) * numpy.abs(ampl)  # amplitude
+
+        # this uses binned statistic
+        downbins = numpy.concatenate((t-dt/2.0, [max(t) + dt/2.0]))
+        flare = binned_statistic(
+            timeup,
+            flareup,
+            statistic="mean",
+            bins=downbins
+        )[0]
+    else:
+        flare = numpy.piecewise(
+            t,
+            [(t <= tpeak) * (t-tpeak)/fwhm > -1.0, (t > tpeak)],
+            [
+                lambda x: (
+                    _fr[0]  # 0th order
+                    +
+                    _fr[1] * ((x - tpeak) / fwhm)  # 1st order
+                    +
+                    _fr[2] * ((x - tpeak) / fwhm)**2.0  # 2nd order
+                    +
+                    _fr[3] * ((x - tpeak) / fwhm)**3.0  # 3rd order
+                    +
+                    _fr[4] * ((x - tpeak) / fwhm)**4.0  # 4th order
+                ),
+                lambda x: (
+                    _fd[0] * numpy.exp(((x - tpeak) / fwhm) * _fd[1])
+                    +
+                    _fd[2] * numpy.exp(((x - tpeak) / fwhm) * _fd[3])
+                )
+            ]
+        ) * numpy.abs(ampl)  # amplitude
+
+    return flare
+
+
+def injectFakeFlares(
+    lc,
+    flares,
+    model="mendoza2022",
+    gapwindow=0.1,
+    fakefreq=0.0005/24/60/60,
+    inject_before_detrending=False,
+    d=False,
+    seed=None
+):
+    """
+    Create a number of events, inject them in to data. Use grid of amplitudes
+    and durations, keep ampl in relative flux units. Keep track of energy
+    in Equiv Dur. Duration defined in minutes. Amplitude defined multiples
+    of the median error.
+
+    Parameters:
+
+    - `model`: the flare model to use (*`mendoza2022` or `davenport2014`*);
+    - `gapwindow`: ?;
+    - `fakefreq`: flares per second, but at least one per continuous
+    observation period will be injected;
+    - `inject_before_detrending`: by default, flares are injected before
+    the light curve is detrended;
+    - `d`: if `True`, a seed for random numbers will be set;
+    - `seed`: if `d == True`, seed will be set to this number.
+
+    Returns:
+
+    - `FlareLightCurve` with fake flare signatures.
+    """
+
+    fake_flares = pandas.DataFrame(
+        columns=[
+            "duration_d",
+            "amplitude",
+            "ed_inj",
+            "peak_time"
+        ]
+    )
+
+    # either inject flares into the un-detrended light curve
+    if inject_before_detrending is True:
+        typ = "flux"
+        typerr = "flux_err"
+    # or into the detrended one
+    elif inject_before_detrending is False:
+        typ = "detrended_flux"
+        typerr = "detrended_flux_err"
+
+    # how many flares do you want to inject,
+    # at least one per gap or as defined by the frequency
+    nfakesum = max(
+        len(gaps),
+        int(
+            numpy.rint(
+                fakefreq
+                *
+                (lc["time"].values.max() - lc["time"].values.min())
+            )
+        )
+    )
+
+    # init arrays for the synthetic flare parameters
+    t0_fake = []  # peak times
+    ed_fake = []  # ED
+    dur_fake = []  # duration
+    ampl_fake = []  # amplitude
+
+    # init the synthetic flare counter to allow to point to the right places
+    # in the arrays above (XXX_fake, etc)
+    # ckm = 0
+
+    gaps = findGaps(lc)
+    # are there real flares to deal with in the gap?
+    real_flares_in_gap = pandas.DataFrame()
+    for (le, ri) in gaps:
+        real_gap = flares.query("`istart` >= @le & `istop` <= @ri")
+        real_flares_in_gap = pandas.concat([real_flares_in_gap, real_gap])
+    # pick flux, time, and flux error arrays
+    for k in range(len(gaps)):
+        le, ri = gaps[k]
+        error = lc.iloc[le:ri][typerr].values
+        flux = lc.iloc[le:ri][typ].values
+        time = lc.iloc[le:ri]["time"].values
+        nfake = 1
+
+        # generate the time constraints for the flares you want to inject
+        mintime, maxtime = numpy.min(time), numpy.max(time)
+        dtime = maxtime - mintime
+
+        # generate a distribution of durations and amplitudes
+        distribution = generateFakeFlareDistribution(
+            nfake,
+            d,
+            seed
+        )
+
+        # add the distribution for this observing period
+        # to the full list of injected flares
+        print(distribution[0], distribution[1])
+        dur_fake = distribution[0]
+        ampl_fake = distribution[1]
+
+        # generate random peak time, avoid known flares
+        isok = False
+        # keep picking new random peak times for your synthetic flares
+        # until it does not overlap with a real one
+        while isok is False:
+            # choose a random peak time
+            # if you set a seed you will get the same synthetic flares
+            # all the time
+            if isinstance(seed, int):
+                t0 = (
+                    modRandom(1, d, seed * k)
+                    *
+                    dtime
+                    +
+                    mintime
+                )[0]
+            # if you do note set a seed, the synthetic flares will be
+            # randomly distributed
+            elif seed is None:
+                t0 = (
+                    modRandom(1, d)
+                    *
+                    dtime
+                    +
+                    mintime
+                )[0]
+
+            # check if there are there any real flares to deal with
+            # at that peak time. Only relevant if there were any flares
+            # detected at all
+            if len(real_flares_in_gap) > 0:
+                b = 0
+                # are there any real flares happening at peak time?
+                # fake flares should not overlap with real ones
+                for index, row in real_flares_in_gap.iterrows():
+                    if (
+                        t0 >= real_flares_in_gap.at[index, "tstart"]
+                        and
+                        t0 <= real_flares_in_gap.at[index, "tstop"]
+                    ):
+                        b += 1
+
+                # number of flares that overlap should be 0
+                if b == 0:
+                    isok = True
+            # no real flares, no trouble
+            else:
+                isok = True
+
+            # add the peak time to the list
+            # generate the flare flux from the Davenport 2014 model
+            if model == "davenport2014":
+                fl_flux = flareModelDavenport2014(
+                    time,
+                    t0,
+                    dur_fake[0],
+                    ampl_fake[0]
+                )
+            elif model == "mendoza2022":
+                fl_flux = flareModelMendoza2022(
+                    time,
+                    t0,
+                    dur_fake[0],
+                    ampl_fake[0]
+                )
+            else:
+                raise ValueError(f"Unknown flare model: {model}")
+
+            lc.iloc[le:ri][typ] = (
+                lc.iloc[le:ri][typ].values
+                +
+                fl_flux * lc.iloc[le:ri]["iterativeMedian"].values
+            )
+
+            # calculate the injected ED
+            ed_fake = numpy.sum(numpy.diff(time) * fl_flux[:-1])
+            # inject flare in to light curve by adding the flare flux
+            fake_flares.at[k, "duration_d"] = dur_fake[0]
+            fake_flares.at[k, "amplitude"] = ampl_fake[0]
+            fake_flares.at[k, "ed_inj"] = ed_fake
+            fake_flares.at[k, "peak_time"] = t0
+
+        # Increment the counter
+        # ckm += nfake
+
+    # return the FLC with the injected flares
+    return lc, fake_flares
+
+
 def sampleFlareRecovery(
     lc,
     flares,
@@ -691,7 +1104,7 @@ def sampleFlareRecovery(
     widgets = [progressbar.Percentage(), progressbar.Bar()]
     bar = progressbar.ProgressBar(widgets=widgets, max_value=iterations).start()
     for i in range(iterations):
-        fake_lc, fake_flares = inject_fake_flares(
+        fake_lc, fake_flares = injectFakeFlares(
             lc,
             flares,
             fakefreq=fakefreq
@@ -699,12 +1112,11 @@ def sampleFlareRecovery(
 
         injs = fake_flares
 
-        fake_flcd = find_flares(fake_lc,fake=True)
+        fake_flcd = findFlares(fake_lc, fake=True)
         recs = fake_flcd
         print(recs)
-        if save_lc_to_file == True:
+        if save_lc_to_file is True:
             fake_lc.to_fits(f"{folder}after.fits")
-            print(f"saved {self.targetit} LC after detrending")
 
         injrec_results = pandas.DataFrame(
             columns=[
@@ -752,12 +1164,311 @@ def sampleFlareRecovery(
     return flares, fake_flares
 
 
-def characterizeFlares(
+def setupBins(
     injrec,
     flares,
     ampl_bins=None,
     dur_bins=None,
-    flares_per_bin=30
+    flares_per_bin=None
+):
+    """
+    Get amplitude and duration bins.
+    """
+    # did the user give appropriate bins?
+    bins = numpy.array(
+        [
+            bool(ampl_bins is not None),
+            bool(dur_bins is not None)
+        ]
+    )
+
+    # if only one or no bin is given explicitly,
+    # make sure flares_per_bin is set
+    if ~bins.all() and flares_per_bin is None:
+        raise ValueError(
+            " ".join((
+                "Give either ampl_bins and dur_bins, or either of",
+                "the two together with flares_per_bin, or neither of",
+                "the two but flares_per_bin"
+            ))
+        )
+
+    # if only one out of [ampl_bins, dur_bins] is specified,
+    # specify the other by fixing the `flares_per_bin`
+    if bins.any() and ~bins.all():
+        # which one is not defined?
+        if ampl_bins is None:
+            b = copy.copy(dur_bins)
+        elif dur_bins is None:
+            b = copy.copy(ampl_bins)
+
+        # if defined bins are given as array, find length
+        lngh = (
+            b if isinstance(b, float) or isinstance(b, int)
+            else len(b)
+        )
+
+        # define the other bins accordingly
+        if ampl_bins is None:
+            ampl_bins = int(numpy.rint(injrec.shape[0] / lngh / flares_per_bin))
+        elif dur_bins is None:
+            dur_bins = int(numpy.rint(injrec.shape[0] / lngh / flares_per_bin))
+    # if no bins are specified, choose bins of equal size
+    # with approximately `flares_per_bin` in each bin:
+    elif ~bins.any():
+        bins = int(numpy.rint(numpy.sqrt(injrec.shape[0] / flares_per_bin)))
+        ampl_bins = bins
+        dur_bins = bins
+
+    # if no flares are given, substitute with fake flares
+    if len(flares) == 0:
+        flares = injrec
+
+    # set bins according to data
+    if isinstance(ampl_bins, int):
+        ampl_bins = numpy.linspace(
+            min(
+                injrec["ampl_rec"].min(),
+                flares["ampl_rec"].min(),
+                injrec["amplitude"].min()
+            ),
+            max(
+                injrec["ampl_rec"].max(),
+                flares["ampl_rec"].max(),
+                injrec["amplitude"].max()
+            ),
+            ampl_bins
+        )
+
+    if isinstance(dur_bins, int):
+        dur_bins = numpy.linspace(
+            min(
+                injrec["dur"].min(),
+                flares["dur"].min(),
+                injrec["duration_d"].min()
+            ),
+            max(
+                injrec["dur"].max(),
+                flares["dur"].max(),
+                injrec["duration_d"].max()
+            ),
+            dur_bins
+        )
+
+    return ampl_bins, dur_bins
+
+
+def tileUpInjectionRecovery(
+    df,
+    typ,
+    ampl="amplitude",
+    dur="duration_d",
+    otherfunc="count",
+    ampl_bins=numpy.arange(0, 50, 0.025),
+    dur_bins=numpy.arange(0, .2*24*60*60, 5e-3*24*60*60)
+):
+    """
+    Tile up the injection recovery data into amplitude and duration bins.
+    Return a multi-indexed matrix that can be accessed to assign recovered
+    ED/amplitude/duration ratio or recovery probability to a given
+    observation (AMPL, DUR) or its recovery corrected form.
+
+    Parameters:
+
+    - `df`: injection recovery table;
+    - `typ`: type of inj-rec parameter to obtain. Can be
+    `recovery_probability`, `ed_ratio`, `amplitude_ratio`,
+    `duration_ratio`;
+    - `ampl`: column name used to bin on one parameter axis'
+    - `dur`: column name used to bin on the other axis;
+    - `otherfunc`: pandas groupby applicable function string
+    (`std`, `count`, `mean`, etc). Use this to get another statistic
+    on the desired inj-rec parameter that is not median;
+    - `ampl_bins`: bins for one axis, should cover both injected
+    and recovered range;
+    - `dur_bins`: bins for the other axis, should cover both injected
+    and recovered range.
+
+    Returns:
+
+    - multi-indexed tiled injection-recovery dataset'
+    - column name for relevant parameter.
+    """
+
+    # calculate helpful columns
+    if "rec" not in df.columns:
+        df["rec"] = df["ed_rec"].fillna(0).astype(bool).astype(int)
+    if "dur" not in df.columns:
+        df["dur"] = df.tstop - df.tstart
+
+    d1 = df.assign(
+        Amplitude=pandas.cut(df[ampl], ampl_bins),
+        Duration=pandas.cut(df[dur],  dur_bins)
+    )
+
+    types = {
+        "ed_ratio": ("ed_rec", "ed_inj", "edrat"),
+        "amplitude_ratio": ("ampl_rec", "amplitude", "amplrat"),
+        "duration_ratio": ("dur", "duration_d", "durrat")
+    }
+
+    if typ == "recovery_probability":
+        grouped = d1.groupby(["Amplitude", "Duration"])
+        d2 = grouped.rec.sum() / grouped.rec.count()
+        d3 = getattr(grouped.rec, otherfunc)()
+        val = "rec"
+    else:
+        d1["rel"] = d1[types[typ][0]] / d1[types[typ][1]]
+        grouped = d1.groupby(["Amplitude", "Duration"])
+        d2 = grouped.rel.median()
+        d3 = getattr(grouped.rel, otherfunc)()
+        val = types[typ][2]
+
+    return pandas.DataFrame({val: d2, otherfunc: d3}), val
+
+
+def multiIndexIntoDfWithNans(
+    x,
+    df,
+    i1="ampl_rec",
+    i2="dur",
+    i3="edrat"
+):
+    """
+    Helps with indexing in multi-indexed tables that also have NaNs.
+
+    Parameters:
+
+    - `x`: row from the flare detection table;
+    - `df`: multi-indexed table with NaNs;
+    - `i1`, `i2`, `i3`: names of 1st index, 2nd index and value column
+    in the table.
+
+    Returns:
+
+    - `float`: value at index given by x.
+    """
+    try:
+        return df.loc[(x[i1], x[i2]), i3]
+    except KeyError:
+        return numpy.nan
+
+
+def characterizeFlares(
+    flares,
+    df,
+    otherfunc="count",
+    amplrec="ampl_rec",
+    durrec="dur",
+    amplinj="amplitude",
+    durinj="duration_d"
+):
+    """
+    Assign ED recovery ratios, and recovery probability to all flares
+    whose recovered parameters are covered by the synthetic data.
+
+    Parameters:
+
+    - `flares`: flare table;
+    - `df`: injection-recovery table;
+    - `otherfunc`: additional column for statistical analysis. Can accept
+    `count`, `std`, and other simple Pandas methods that work
+    on groupby objects.
+    - `amplrec`: column name for recovered amplitude;
+    - `durrec`: column name for recovered duration;
+    - `amplinj`: column name for injected amplitude;
+    - `durrec`: column name for injected duration.
+
+    Returns:
+
+    - flares with additional columns.
+    """
+
+    # define observed flare duration
+    if "dur" not in flares.columns:
+        flares["dur"] = flares["tstop"] - flares["tstart"]
+    if "dur" not in df.columns:
+        df["dur"] = df["tstop"] - df["tstart"]
+
+    ds = dict()
+
+    # calculate inj-rec ratio for ED, amplitude, and duration
+    for typ in ["ed_ratio", "amplitude_ratio", "duration_ratio"]:
+        d, val = tileUpInjectionRecovery(
+            df,
+            typ,
+            otherfunc=otherfunc,
+            ampl=amplrec,
+            dur=durrec
+        )
+        d = d.dropna(how="all", axis=0)
+        ds[typ] = d
+
+        def helper(x): return multiIndexIntoDfWithNans(
+            x,
+            d,
+            i1="ampl_rec",
+            i2="dur",
+            i3=val
+        )
+        flares[typ] = flares.apply(helper, axis=1)
+
+        def helper(x): return multiIndexIntoDfWithNans(
+            x,
+            d,
+            i1="ampl_rec",
+            i2="dur",
+            i3=otherfunc
+        )
+        flares["{}_{}".format(typ, otherfunc)] = flares.apply(helper, axis=1)
+
+    # calculate recovery probability from corrected values
+    flares["amplitude_corr"] = flares[amplrec] / flares.amplitude_ratio
+    flares["duration_corr"] = flares[durrec] / flares.duration_ratio
+    flares["ed_corr"] = flares["ed_rec"] / flares.ed_ratio
+    d, val = tileUpInjectionRecovery(
+        df,
+        "recovery_probability",
+        otherfunc=otherfunc,
+        ampl=amplinj,
+        dur=durinj
+    )
+    d = d.dropna(how="all", axis=0)
+    ds["recovery_probability"] = d
+
+    def helper(x): return multiIndexIntoDfWithNans(
+        x,
+        d,
+        i1="amplitude_corr",
+        i2="duration_corr",
+        i3=val
+    )
+    flares["recovery_probability"] = flares.apply(
+        helper,
+        axis=1
+    )
+
+    def helper(x): return multiIndexIntoDfWithNans(
+        x,
+        d,
+        i1="amplitude_corr",
+        i2="duration_corr",
+        i3=otherfunc
+    )
+    flares["{}_{}".format("recovery_probability", otherfunc)] = flares.apply(
+        helper,
+        axis=1
+    )
+
+    return flares, ds
+
+
+def wrapCharacterizationOfFlares(
+    injrec,
+    flares,
+    ampl_bins=None,
+    dur_bins=None,
+    flares_per_bin=None
 ):
     """
     Take injection-recovery results for a data set and the corresponding
@@ -780,7 +1491,7 @@ def characterizeFlares(
     # define observed flare duration
     flares["dur"] = flares["tstop"] - flares["tstart"]
 
-    ampl_bins, dur_bins = setup_bins(
+    ampl_bins, dur_bins = setupBins(
         injrec,
         flares,
         ampl_bins=ampl_bins,
@@ -792,22 +1503,126 @@ def characterizeFlares(
     injrec.ed_rec = injrec.ed_rec.fillna(0)
     injrec['rec'] = injrec.ed_rec.astype(bool).astype(float)
 
-    flcc, dscc = characterize_flares(flares, injrec, otherfunc="count",
-                            amplrec="ampl_rec", durrec="dur",
-                            amplinj="amplitude", durinj="duration_d",
-                            ampl_bins=ampl_bins,
-                            dur_bins=dur_bins)
-    fl, ds = characterize_flares(flares, injrec, otherfunc="std",
-                            amplrec="ampl_rec", durrec="dur",
-                            amplinj="amplitude", durinj="duration_d",
-                            ampl_bins=ampl_bins,
-                            dur_bins=dur_bins)
+    flcc, dscc = characterizeFlares(
+        flares,
+        injrec,
+        otherfunc="count",
+        amplrec="ampl_rec",
+        durrec="dur",
+        amplinj="amplitude",
+        durinj="duration_d",
+        ampl_bins=ampl_bins,
+        dur_bins=dur_bins
+    )
+
+    fl, ds = characterizeFlares(
+        flares,
+        injrec,
+        otherfunc="std",
+        amplrec="ampl_rec",
+        durrec="dur",
+        amplinj="amplitude",
+        durinj="duration_d",
+        ampl_bins=ampl_bins,
+        dur_bins=dur_bins
+    )
+
     fl = fl.merge(flcc)
     fl = fl.drop_duplicates()
-    fl["ed_corr_err"] = numpy.sqrt(fl.ed_rec_err**2 + fl.ed_corr**2 * fl.ed_ratio_std**2)
-    fl["amplitude_corr_err"] = fl.amplitude_corr * fl.amplitude_ratio_std / fl.amplitude_ratio
-    fl["duration_corr_err"] = fl.duration_corr * fl.duration_ratio_std / fl.duration_ratio
+
+    fl["ed_corr_err"] = numpy.sqrt(
+        fl.ed_rec_err**2
+        +
+        fl.ed_corr**2
+        *
+        fl.ed_ratio_std**2
+    )
+
+    fl["amplitude_corr_err"] = (
+        fl.amplitude_corr
+        *
+        fl.amplitude_ratio_std
+        /
+        fl.amplitude_ratio
+    )
+
+    fl["duration_corr_err"] = (
+        fl.duration_corr
+        *
+        fl.duration_ratio_std
+        /
+        fl.duration_ratio
+    )
+
     return fl
+
+
+def modRandom(
+    x,
+    d: bool = False,
+    seed: Optional[int] = 667
+):
+    """
+    Helper function that generates deterministic random numbers
+    if needed for testing.
+
+    Parameters:
+
+    - `d`: flag to set if random numbers shall be deterministic;
+    - `seed`: sets the seed value for random number generator.
+    """
+
+    if d is True:
+        numpy.random.seed(seed)
+        return numpy.random.rand(x)
+    else:
+        numpy.random.seed()  # do not remove, otherwise the seed is fixed
+        return numpy.random.rand(x)
+
+
+def generateFakeFlareDistribution(
+    nfake,
+    d: bool,
+    seed: int,
+    ampl=[1e-4, 50],
+    dur=[10, 1e6],
+    mode="uniform"
+):
+    """
+    Creates different distributions of fake flares to be injected
+    into light curves.
+
+    Parameters:
+
+    - `nfake`: number of fake flares to be created;
+    - `ampl`: amplitude range in relative flux units;
+    - `dur`: duration range in sec;
+    - `mode`: distribution of fake flares in (duration, amplitude) space.
+    With `uniform` flares are distributed evenly in duration
+    and amplitude space.
+
+    Returns
+
+    - `dur_fake`: durations of generated fake flares in days;
+    - `ampl_fake`: amplitudes of generated fake flares in relative flux units.
+    """
+    if mode == "uniform":
+        dur_fake = (
+            modRandom(nfake, d, seed)
+            *
+            (dur[1] - dur[0])
+            +
+            dur[0]
+        )
+        ampl_fake = (
+            modRandom(nfake, d, seed)
+            *
+            (ampl[1] - ampl[0])
+            +
+            ampl[0]
+        )
+
+    return dur_fake.tolist(), ampl_fake.tolist()
 
 
 # timeSeries = [1.0, 1.1, 1.2]
