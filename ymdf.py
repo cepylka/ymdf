@@ -6,9 +6,11 @@ from scipy import special
 import progressbar
 import astropy.units as units
 from astropy import constants
+from astropy.table import Table
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import seaborn
+import pathlib
 
 import pandera
 from typing import Tuple, List, Optional, Any
@@ -2399,3 +2401,35 @@ def generateFakeFlareDistribution(
 # fluxSeries = [2.0, 2.1, 2.2]
 # fluxErrorSeries = [3.0, 3.1, 3.2]
 # findFlares(timeSeries, fluxSeries, fluxErrorSeries)
+
+
+def lightCurveToPandas(
+    fitsFile: str
+):
+    fitsFilePath: pathlib.Path = pathlib.Path(fitsFile)
+    if not filePath.exists():
+        raise ValueError(f"The path [{fitsFilePath}] does not exist")
+    if not filePath.is_file():
+        raise ValueError(f"The path [{fitsFilePath}] is not a file")
+
+    lc = Table.read(fitsFilePath)
+
+    # FITS stores data in big-endian, but pandas works with little-endian,
+    # so the byte order needs to be swapped
+    narr = numpy.array(lc).byteswap().newbyteorder()
+    pndraw = pandas.DataFrame(narr)
+    # print(pndraw.columns)
+
+    flux = pandas.DataFrame(
+        columns=[
+            "time",
+            "flux",
+            "flux_err"
+        ]
+    )
+
+    flux["time"] = pndraw["TIME"]
+    flux["flux"] = pndraw["PDCSAP_FLUX"]
+    flux["flux_err"] = pndraw["PDCSAP_FLUX_ERR"]
+
+    return flux
