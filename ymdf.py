@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import seaborn
 import pathlib
+import lightkurve
 
 import pandera
 from typing import Tuple, List, Optional, Any
@@ -2403,19 +2404,23 @@ def generateFakeFlareDistribution(
 # findFlares(timeSeries, fluxSeries, fluxErrorSeries)
 
 
-def lightCurveToPandas(
+def fitsToPandas(
     fitsFile: str
-):
+) -> pandas.DataFrame:
+    """
+    Openning a FITS file and creating a Pandas table from it.
+    """
     fitsFilePath: pathlib.Path = pathlib.Path(fitsFile)
-    if not filePath.exists():
+    if not fitsFilePath.exists():
         raise ValueError(f"The path [{fitsFilePath}] does not exist")
-    if not filePath.is_file():
+    if not fitsFilePath.is_file():
         raise ValueError(f"The path [{fitsFilePath}] is not a file")
 
     lc = Table.read(fitsFilePath)
 
     # FITS stores data in big-endian, but pandas works with little-endian,
     # so the byte order needs to be swapped
+    # https://stackoverflow.com/a/30284033/1688203
     narr = numpy.array(lc).byteswap().newbyteorder()
     pndraw = pandas.DataFrame(narr)
     # print(pndraw.columns)
@@ -2431,5 +2436,49 @@ def lightCurveToPandas(
     flux["time"] = pndraw["TIME"]
     flux["flux"] = pndraw["PDCSAP_FLUX"]
     flux["flux_err"] = pndraw["PDCSAP_FLUX_ERR"]
+
+    return flux
+
+
+def tessLightkurveToPandas(
+    lightKurve: lightkurve.lightcurve.TessLightCurve
+) -> pandas.DataFrame:
+    """
+    Converting lightkurve object to Pandas table.
+
+    There are 2 ways of obtaining the lightkurve object.
+
+    First one is to download it from MAST:
+
+    ``` py
+    name = "Karmn J07446+035"
+    search_result = lightkurve.search_lightcurve(
+        name,
+        author="SPOC",
+        cadence="short",
+    )
+    lk = search_result[0].download()
+    ```
+
+    And second one is to open an already downloaded FITS file:
+
+    ``` py
+    lk = lightkurve.TessLightCurve.read("./some.fits")
+    ```
+    """
+    pndraw = lightKurve.to_pandas()
+    # print(pndraw.columns)
+
+    flux = pandas.DataFrame(
+        columns=[
+            "time",
+            "flux",
+            "fluxError"
+        ]
+    )
+
+    flux["time"] = pndraw.index
+    flux["flux"] = pndraw["pdcsap_flux"]
+    flux["fluxError"] = pndraw["pdcsap_flux_err"]
 
     return flux
