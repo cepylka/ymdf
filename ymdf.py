@@ -30,7 +30,6 @@ def findGaps(
     - `maximumGap`: should be larger than step in time series
     - `minimumObservationPeriod`:
     """
-
     dt = numpy.diff(lightCurve["time"].values)
 
     gap = numpy.where(numpy.append(0, dt) >= maximumGap)[0]
@@ -49,6 +48,7 @@ def findGaps(
     right = numpy.delete(right, tooShort)
 
     return list(zip(left, right))
+
 
 def addPaddingToList(
     lst: list[int],
@@ -296,7 +296,9 @@ def detrendSavGolUltraViolet(
                 sigmaClip(lightCurve.iloc[le:ri]["flux"])
             )[0] + le
             # incorrect values (inverse of correct ones)
-            outliersIndexes = list(set(list(range(le, ri))) - set(correctValues))
+            outliersIndexes = list(
+                set(list(range(le, ri))) - set(correctValues)
+            )
             outliers = addPaddingToList(
                 outliersIndexes,
                 padding,
@@ -451,6 +453,64 @@ def detrendSavGolTess(
                 padding,
                 max(correctValues)
             )
+
+            # Алтаевские СтаФины
+            #
+            # sta = list(numpy.where(numpy.diff(outliers) == 1)[0])
+            # fin = list(numpy.where(numpy.diff(outliers) == -1)[0])
+            #
+            # # treat outliers at end and start of time series:
+            # if len(sta) > len(fin):
+            #     fin.append(ri - le - 1)
+            # elif len(sta) < len(fin):
+            #     sta = [0] + sta
+            # elif (
+            #     len(sta) == len(fin)
+            #     and
+            #     len(sta) != 0
+            # ):
+            #     # outliers on both ends
+            #     if (
+            #         sta[0] > fin[0]
+            #         or
+            #         sta[-1] > fin[-1]
+            #     ):
+            #         sta = [0] + sta
+            #         fin.append(ri - le - 1)
+            #
+            # # compute flux model as the mean value between
+            # # start and end of flare, that is, we interpolate
+            # # linearly
+            # flux_model_j = numpy.full(
+            #     numpy.where(outliers == 1)[0].shape,
+            #     numpy.nan
+            # )
+            #
+            # off = 0
+            # for i, j in list(zip(sta, fin)):
+            #     d = 0
+            #     if j + 2 > ri - le - 1:  # treat end of time series
+            #         k = i
+            #     elif i == 0:
+            #         i = 0
+            #         d = 1
+            #         k = j + 2
+            #     else:
+            #         k = j + 2
+            #     k = min(len(lc.flux_model[le:ri]), k)
+            #
+            #     upper = min(j + d - i + off, len(flux_model_j))
+            #
+            #     # work around a bug that sometimes occurs, not sure why
+            #     if k == len(lc.flux_model[le:ri]):
+            #         k -= 1
+            #
+            #     flux_model_j[off:upper] = numpy.nanmean(
+            #         lc.flux_model[le:ri][[i, k]]
+            #     )
+            #     off += j + d - i
+            # # print(lc.flux[le:ri][numpy.where(a==1)[0]], flux_model_j, numpy.nanmean(flux_model_i))
+            # lc["detrended_flux"][le:ri][numpy.where(a==1)[0]] = lc.flux.value[le:ri][numpy.where(a==1)[0]] - flux_model_j + numpy.nanmean(flux_model_i)
 
             betweenGaps = pandas.DataFrame(columns=lightCurve.columns)
 
