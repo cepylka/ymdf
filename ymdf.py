@@ -296,9 +296,9 @@ def detrendSavGolUltraViolet(
                 sigmaClip(lightCurve.iloc[le:ri]["flux"])
             )[0] + le
             # incorrect values (inverse of correct ones)
-            outliers_ind = list(set(list(range(le, ri))) - set(correctValues))
+            outliersIndexes = list(set(list(range(le, ri))) - set(correctValues))
             outliers = addPaddingToList(
-                outliers_ind,
+                outliersIndexes,
                 padding,
                 max(correctValues)
             )
@@ -349,11 +349,29 @@ def detrendSavGolUltraViolet(
     return lightCurve
 
 
+def establishWindowLength(
+    timeSeries: pandas.Series,
+    windowLengthCandidate: int
+) -> int:
+    if windowLengthCandidate == 0:
+        dt = numpy.nanmedian(
+            timeSeries[1:]
+            -
+            timeSeries[0:-1]
+        )
+        windowLengthCandidate = numpy.floor(0.1 / dt)
+        if windowLengthCandidate % 2 == 0:
+            windowLengthCandidate += 1
+
+    # window length must be larger than polyorder
+    return max(windowLengthCandidate, 5)
+
+
 def detrendSavGolTess(
     lightCurve: pandas.DataFrame,
     gaps: List[Tuple[int, int]],
-    windowLength: int,
     padding: int,
+    windowLength: int = 0
 ) -> pandas.DataFrame:
     """
     Construct a light curve model. Based on original Appaloosa (Davenport 2016)
@@ -364,11 +382,12 @@ def detrendSavGolTess(
 
     - `lightCurve`: light curve;
     - `gaps`: found gaps in series;
-    - `windowLength`: number of datapoints for Savitzky-Golay filter, either
-    one value for entire light curve of piecewise for gaps.
+    - `windowLength`: number of data points for Savitzky-Golay filter. If you
+    don't know your window length, use the default `0` value (*for calculation
+    of window length for each gap*).
     """
 
-    maximumWindowLength = 5
+    # maximumWindowLength = 5
     # if windowLength > maximumWindowLength:
     #     raise ValueError(
     #         f"Windows length cannot be larger than {maximumWindowLength}"
@@ -381,23 +400,32 @@ def detrendSavGolTess(
     #     # end of data
     #     right = gapOut[1:]-1
     #     gaps=list(zip(left, right))
-        # raise ValueError(
-        #     " ".join((
-        #         "Gaps cannot be None, so if your series has no gaps,",
-        #         "then pass an empty list"
-        #     ))
-        # )
+    # raise ValueError(
+    #     " ".join((
+    #         "Gaps cannot be None, so if your series has no gaps,",
+    #         "then pass an empty list"
+    #     ))
+    # )
     # print(gaps)
+
+    if not isinstance(windowLength, int):
+        raise ValueError("Window length must be a number")
+
     lightCurve["fluxDetrended"] = numpy.array(
         [numpy.nan]*len(lightCurve.index), dtype=float
     )
     lightCurve["fluxModel"] = numpy.array(
         [numpy.nan]*len(lightCurve.index), dtype=float
     )
-    if gaps is None:
+
+    gaps = [
+        (windowLength, gaps[i][0], gaps[i][1])
+        for i in range(len(gaps))
+    ]
+    if len(gaps) == 0:
         lightCurve["fluxDetrended"] = savgol_filter(
             lightCurve["flux"],
-            windowLength,
+            establishWindowLength(lightCurve["time"], windowLength),
             3,
             mode="nearest"
         )
@@ -408,18 +436,24 @@ def detrendSavGolTess(
             +
             numpy.nanmean(lightCurve["fluxDetrended"])
         )
-
     else:
-        for (le, ri) in gaps:
+        for (wl, le, ri) in gaps:
             # iterative sigma clipping
             correctValues = numpy.where(
                 sigmaClip(lightCurve.iloc[le:ri]["flux"])
             )[0] + le
             # incorrect values (inverse of correct ones)
-            outliers_ind = list(set(list(range(le, ri))) - set(correctValues))
-            outliers = addPaddingToList(outliers_ind, padding, max(correctValues))
+            outliersIndexes = list(
+                set(list(range(le, ri))) - set(correctValues)
+            )
+            outliers = addPaddingToList(
+                outliersIndexes,
+                padding,
+                max(correctValues)
+            )
 
             betweenGaps = pandas.DataFrame(columns=lightCurve.columns)
+
             for index, row in lightCurve.iterrows():
                 if index in correctValues:
                     prwt = pandas.DataFrame([row], index=[index])
@@ -433,10 +467,12 @@ def detrendSavGolTess(
                         lightCurve["flux"]
                     )
 
-            if not betweenGaps.empty:
+            if betweenGaps.empty:
+                continue
+            else:
                 betweenGaps["fluxDetrended"] = savgol_filter(
                     betweenGaps["flux"],
-                    windowLength,
+                    establishWindowLength(betweenGaps["time"], wl),
                     3,
                     mode="nearest"
                 )
@@ -448,16 +484,16 @@ def detrendSavGolTess(
                     numpy.nanmean(betweenGaps["fluxDetrended"])
                 )
 
-            for index, row in lightCurve.iterrows():
-                if index in betweenGaps.index:
-                    lightCurve.at[index, "fluxDetrended"] = betweenGaps.at[
-                        index,
-                        "fluxDetrended"
-                    ]
-                    lightCurve.at[index, "fluxModel"] = betweenGaps.at[
-                        index,
-                        "fluxModel"
-                    ]
+                for index, row in lightCurve.iterrows():
+                    if index in betweenGaps.index:
+                        lightCurve.at[index, "fluxDetrended"] = betweenGaps.at[
+                            index,
+                            "fluxDetrended"
+                        ]
+                        lightCurve.at[index, "fluxModel"] = betweenGaps.at[
+                            index,
+                            "fluxModel"
+                        ]
 
     # with pandas.option_context("mode.use_inf_as_null", True):
     lightCurve = lightCurve.replace([numpy.inf, -numpy.inf], numpy.nan)
