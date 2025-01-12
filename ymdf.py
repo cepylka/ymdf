@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import seaborn
 import pathlib
-import lightkurve
+# import lightkurve as lk
 
 import pandera
 from typing import Tuple, List, Optional, Any
@@ -297,6 +297,126 @@ def detrendSavGolUltraViolet(
             )[0] + le
             # incorrect values (inverse of correct ones)
             outliers_ind = list(set(list(range(le, ri))) - set(correctValues))
+            outliers = addPaddingToList(
+                outliers_ind,
+                padding,
+                max(correctValues)
+            )
+
+            betweenGaps = pandas.DataFrame(columns=lightCurve.columns)
+            for index, row in lightCurve.iterrows():
+                if index in correctValues:
+                    prwt = pandas.DataFrame([row], index=[index])
+                    betweenGaps = pandas.concat([betweenGaps, prwt])
+                elif index in outliers:
+                    lightCurve.at[index, "fluxDetrended"] = lightCurve.at[
+                        index,
+                        "flux"
+                    ]
+                    lightCurve.at[index, "fluxModel"] = numpy.nanmean(
+                        lightCurve["flux"]
+                    )
+
+            if not betweenGaps.empty:
+                betweenGaps["fluxDetrended"] = savgol_filter(
+                    betweenGaps["flux"],
+                    windowLength,
+                    3,
+                    mode="nearest"
+                )
+                betweenGaps["fluxModel"] = (
+                    betweenGaps["flux"]
+                    -
+                    betweenGaps["fluxDetrended"]
+                    +
+                    numpy.nanmean(betweenGaps["fluxDetrended"])
+                )
+
+            for index, row in lightCurve.iterrows():
+                if index in betweenGaps.index:
+                    lightCurve.at[index, "fluxDetrended"] = betweenGaps.at[
+                        index,
+                        "fluxDetrended"
+                    ]
+                    lightCurve.at[index, "fluxModel"] = betweenGaps.at[
+                        index,
+                        "fluxModel"
+                    ]
+
+    # with pandas.option_context("mode.use_inf_as_null", True):
+    lightCurve = lightCurve.replace([numpy.inf, -numpy.inf], numpy.nan)
+    # print(lightCurve["fluxDetrended"])
+    return lightCurve
+
+
+def detrendSavGolTess(
+    lightCurve: pandas.DataFrame,
+    gaps: List[Tuple[int, int]],
+    windowLength: int,
+    padding: int,
+) -> pandas.DataFrame:
+    """
+    Construct a light curve model. Based on original Appaloosa (Davenport 2016)
+    with Savitzky-Golay filtering from `scipy` and iterative `sigmaClip`ping
+    adopted from K2SC (Aigrain et al. 2016).
+
+    Parameters:
+
+    - `lightCurve`: light curve;
+    - `gaps`: found gaps in series;
+    - `windowLength`: number of datapoints for Savitzky-Golay filter, either
+    one value for entire light curve of piecewise for gaps.
+    """
+
+    maximumWindowLength = 5
+    # if windowLength > maximumWindowLength:
+    #     raise ValueError(
+    #         f"Windows length cannot be larger than {maximumWindowLength}"
+    #     )
+
+    #     gapOut = numpy.append(0, len(lightCurve.index))
+
+    #     # start
+    #     left = gapOut[:-1]
+    #     # end of data
+    #     right = gapOut[1:]-1
+    #     gaps=list(zip(left, right))
+        # raise ValueError(
+        #     " ".join((
+        #         "Gaps cannot be None, so if your series has no gaps,",
+        #         "then pass an empty list"
+        #     ))
+        # )
+    # print(gaps)
+    lightCurve["fluxDetrended"] = numpy.array(
+        [numpy.nan]*len(lightCurve.index), dtype=float
+    )
+    lightCurve["fluxModel"] = numpy.array(
+        [numpy.nan]*len(lightCurve.index), dtype=float
+    )
+    if gaps is None:
+        lightCurve["fluxDetrended"] = savgol_filter(
+            lightCurve["flux"],
+            windowLength,
+            3,
+            mode="nearest"
+        )
+        lightCurve["fluxModel"] = (
+            lightCurve["flux"]
+            -
+            lightCurve["fluxDetrended"]
+            +
+            numpy.nanmean(lightCurve["fluxDetrended"])
+        )
+
+    else:
+        for (le, ri) in gaps:
+            # iterative sigma clipping
+            correctValues = numpy.where(
+                sigmaClip(lightCurve.iloc[le:ri]["flux"])
+            )[0] + le
+            # incorrect values (inverse of correct ones)
+            outliers_ind = list(set(list(range(le, ri))) - set(correctValues))
             outliers = addPaddingToList(outliers_ind, padding, max(correctValues))
 
             betweenGaps = pandas.DataFrame(columns=lightCurve.columns)
@@ -341,7 +461,7 @@ def detrendSavGolUltraViolet(
 
     # with pandas.option_context("mode.use_inf_as_null", True):
     lightCurve = lightCurve.replace([numpy.inf, -numpy.inf], numpy.nan)
-    #print(lightCurve["fluxDetrended"])
+    # print(lightCurve["fluxDetrended"])
     return lightCurve
 
 
@@ -555,6 +675,151 @@ def equivalentDuration(
     #     return ed
 
 
+def equivalentDurationModel(
+    timeSeries,
+    fluxSeries,
+    fluxErrorSeries,
+    fluxQuiet
+    # error=False #always return errors
+) -> float | Tuple[float, float]:
+    """
+    Returns the equivalent duration of a flare event found within
+    indices [start, stop], calculated as the area under
+    the residual (flux-flux_median).
+
+    Use only on detrended light curves.
+
+    Returns also the uncertainty on ED following Davenport (2016)
+
+    Parameters:
+
+    - `lightCurve`: flare light curve;
+    - `error`: if true, then will compute uncertainty on ED.
+
+    Returns:
+
+    - `ed`: equivalent duration in seconds;
+    - `edError`: uncertainty in seconds.
+    """
+
+    residual = ((
+        fluxSeries
+        /
+        fluxQuiet)
+        -
+        1.0
+    )
+    # print(residual)
+    x = timeSeries  # in seconds, add `* 60.0 * 60.0 * 24.0` for days
+    print(numpy.trapz(residual, x=x))
+    ed = numpy.sum(numpy.diff(x) * residual[:-1])
+
+    # # if error == True:
+    # flare_chisq = chiSquare(
+    #     residual[:-1],
+    #     (
+    #         fluxErrorSeries[:-1]
+    #         /
+    #         fluxQuiet
+    #     )
+    # )
+    # edError = numpy.sqrt(ed**2 / (len(timeSeries)-1) / flare_chisq)
+    return ed
+    # else:
+    #     return ed
+# def equivalentDurationModelT(
+#     timeSeries,
+#     fluxSeries,
+#     fluxErrorSeries,
+#     start,
+#     stop
+#     # error=False #always return errors
+# ) -> float | Tuple[float, float]:
+#     """
+#     Returns the equivalent duration of a flare event found within
+#     indices [start, stop], calculated as the area under
+#     the residual (flux-flux_median).
+
+#     Use only on detrended light curves.
+
+#     Returns also the uncertainty on ED following Davenport (2016)
+
+#     Parameters:
+
+#     - `lightCurve`: flare light curve;
+#     - `error`: if true, then will compute uncertainty on ED.
+
+#     Returns:
+
+#     - `ed`: equivalent duration in seconds;
+#     - `edError`: uncertainty in seconds.
+#     """
+#     lightCurve = pandas.DataFrame(
+#             {
+#                 "time": timeSeries,
+#                 "flux": fluxSeries,
+#                 "fluxError": fluxErrorSeries
+#             }
+#         )
+#         if max(lightCurve["fluxError"]) > min(lightCurve["flux"]):
+#             lightCurve["fluxError"] = max(
+#                 1e-16,
+#                 numpy.nanmedian(
+#                     pandas.Series(
+#                         lightCurve["flux"]
+#                     ).rolling(3, center=True).std()
+#                 )
+#             ) * numpy.ones_like(lightCurve["flux"])
+#         gaps = findGaps(
+#             lightCurve,
+#             maximumGap=maximumGap,
+#             # parameter of min time between gaps is needed
+#             # to be elevated to the main function
+#             minimumObservationPeriod=minimumObservationPeriod
+#         )
+
+#         detrendedLightCurve = detrendSavGolUltraViolet(
+#             lightCurve,
+#             gaps,
+#             5,
+#             padding=padding
+#         )
+#         # print(gaps)
+
+#         if detrendedLightCurve["fluxDetrended"].isna().all():
+#             raise ValueError("Finding flares only works on detrended light curves")
+
+#         detrendedLightCurve = findIterativeMedian(
+#             detrendedLightCurve,
+#             gaps,
+#             30
+#             )
+#     start = int(start)
+#     stop = int(stop)+1
+
+#     lct = detrendedLightCurve.loc[start:stop]
+#     residual = (
+#         lct["fluxDetrended"].values
+#         /
+#         numpy.nanmedian(lct["iterativeMedian"].values)
+#         -
+#         1.0
+#     )
+#     x = lct["time"].values  # in seconds, add `* 60.0 * 60.0 * 24.0` for days
+#     ed = numpy.sum(numpy.diff(x) * residual[:-1])
+
+#     flare_chisq = chiSquare(
+#         residual[:-1],
+#         (
+#             lct["fluxError"].values[:-1]
+#             /
+#             numpy.nanmedian(lct["iterativeMedian"].values)
+#         )
+#     )
+#     edError = numpy.sqrt(ed**2 / (stop-1-start) / flare_chisq)
+#     return ed, edError
+
+
 def findFlareEnergy(
     timeSeries,
     fluxSeries,
@@ -564,76 +829,97 @@ def findFlareEnergy(
     starDistance,
     maximumGap,
     minimumObservationPeriod,
-    padding
+    padding,
+    minimumerror,
 ):
-    lightCurve = pandas.DataFrame(
-        {
-            "time": timeSeries,
-            "flux": fluxSeries,
-            "fluxError": fluxErrorSeries
-        }
-    )
-    if max(lightCurve["fluxError"]) > min(lightCurve["flux"]):
-        lightCurve["fluxError"] = max(
-            1e-16,
-            numpy.nanmedian(
-                pandas.Series(
-                    lightCurve["flux"]
-                ).rolling(3, center=True).std()
-            )
-        ) * numpy.ones_like(lightCurve["flux"])
-    gaps = findGaps(
-        lightCurve,
-        maximumGap=maximumGap,
-        # parameter of min time between gaps is needed
-        # to be elevated to the main function
-        minimumObservationPeriod=minimumObservationPeriod
-    )
+    # lightCurve = pandas.DataFrame(
+    #     {
+    #         "time": timeSeries,
+    #         "flux": fluxSeries,
+    #         "fluxError": fluxErrorSeries
+    #     }
+    # )
+    # if max(lightCurve["fluxError"]) > min(lightCurve["flux"]):
+    #     lightCurve["fluxError"] = max(
+    #         1e-16,
+    #         numpy.nanmedian(
+    #             pandas.Series(
+    #                 lightCurve["flux"]
+    #             ).rolling(3, center=True).std()
+    #         )
+    #     ) * numpy.ones_like(lightCurve["flux"])
+    # gaps = findGaps(
+    #     lightCurve,
+    #     maximumGap=maximumGap,
+    #     # parameter of min time between gaps is needed
+    #     # to be elevated to the main function
+    #     minimumObservationPeriod=minimumObservationPeriod
+    # )
 
-    detrendedLightCurve = detrendSavGolUltraViolet(
-        lightCurve,
-        gaps,
-        5,
-        padding=padding
-    )
-    # print(gaps)
+    # detrendedLightCurve = detrendSavGolUltraViolet(
+    #     lightCurve,
+    #     gaps,
+    #     5,
+    #     padding=padding
+    # )
+    # # print(gaps)
 
-    if detrendedLightCurve["fluxDetrended"].isna().all():
-        raise ValueError("Finding flares only works on detrended light curves")
+    # if detrendedLightCurve["fluxDetrended"].isna().all():
+    #     raise ValueError("Finding flares only works on detrended light curves")
 
-    detrendedLightCurve = findIterativeMedian(
-        detrendedLightCurve,
-        gaps,
-        30
-    )
+    # detrendedLightCurve = findIterativeMedian(
+    #     detrendedLightCurve,
+    #     gaps,
+    #     30
+    # )
     luminosity = luminosityQuiescent(
-        detrendedLightCurve,
+        timeSeries,
+        fluxSeries,
+        fluxErrorSeries,
+        starDistance,
         starRadius,
-        starDistance
+        maximumGap,
+        minimumObservationPeriod,
+        padding,
+        minimumerror
     )
     foundFlares["luminosity quiscent"] = numpy.array(numpy.NaN, dtype=float)
     foundFlares["flare_erg"] = numpy.array(numpy.NaN, dtype=float)
     foundFlares["flare_erg_rec"] = numpy.array(numpy.NaN, dtype=float)
     for index, row in foundFlares.iterrows():
-        foundFlares.at[index, "luminosity quiscent"] = luminosity.value
+        foundFlares.at[index, "luminosity quiscent"] = luminosity
         foundFlares.at[index, "flare_erg"] = foundFlares.at[
             index,
             "ed_rec"
-        ] * luminosity.value
+        ] * luminosity
         foundFlares.at[index, "flare_erg_rec"] = foundFlares.at[
             index,
             "ed_corr"
-        ] * luminosity.value
+        ] * luminosity
     return foundFlares
 
 
 def luminosityQuiescent(
-    detrendedlightCurve: pandas.DataFrame,
-    starRadius,
+    timeSeries,
+    fluxSeries,
+    fluxErrorSeries,
     starDistance,
+    starRadius,
+    maximumGap,
+    minimumObservationPeriod,
+    padding,
+    minimumerror
 ):
     integrated_flux = (
-        numpy.nanmedian(detrendedlightCurve["iterativeMedian"])
+        fluxQuiescent(
+            timeSeries,
+            fluxSeries,
+            fluxErrorSeries,
+            maximumGap,
+            minimumObservationPeriod,
+            padding,
+            minimumerror
+        )
         *
         (
             (starDistance*units.pc).to("cm")
@@ -641,14 +927,16 @@ def luminosityQuiescent(
             (starRadius*constants.R_sun.to("cm"))
         )**2
     )
-    # print(numpy.nanmedian(detrendedlightCurve["iterativeMedian"]))
-    return (
+
+    lum = (
         integrated_flux
         *
         numpy.pi
         *
         (starRadius*constants.R_sun.to("cm")) ** 2
     )
+
+    return lum.value
 
 
 def fluxQuiescent(
@@ -2398,12 +2686,6 @@ def generateFakeFlareDistribution(
     return dur_fake.tolist(), ampl_fake.tolist()
 
 
-# timeSeries = [1.0, 1.1, 1.2]
-# fluxSeries = [2.0, 2.1, 2.2]
-# fluxErrorSeries = [3.0, 3.1, 3.2]
-# findFlares(timeSeries, fluxSeries, fluxErrorSeries)
-
-
 def fitsToPandas(
     fitsFile: str
 ) -> pandas.DataFrame:
@@ -2429,13 +2711,13 @@ def fitsToPandas(
         columns=[
             "time",
             "flux",
-            "flux_err"
+            "fluxError"
         ]
     )
 
     flux["time"] = pndraw["TIME"]
     flux["flux"] = pndraw["PDCSAP_FLUX"]
-    flux["flux_err"] = pndraw["PDCSAP_FLUX_ERR"]
+    flux["fluxError"] = pndraw["PDCSAP_FLUX_ERR"]
 
     return flux
 
