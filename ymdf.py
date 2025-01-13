@@ -232,8 +232,8 @@ def sigmaClip(
 def detrendSavGolUltraViolet(
     lightCurve: pandas.DataFrame,
     gaps: List[Tuple[int, int]],
-    windowLength: int,
     padding: int,
+    windowLength: int
 ) -> pandas.DataFrame:
     """
     Construct a light curve model. Based on original Appaloosa (Davenport 2016)
@@ -248,10 +248,10 @@ def detrendSavGolUltraViolet(
     one value for entire light curve of piecewise for gaps.
     """
 
-    maximumWindowLength = 5
-    if windowLength > maximumWindowLength:
+    minimumWindowLength = 5
+    if windowLength < minimumWindowLength:
         raise ValueError(
-            f"Windows length cannot be larger than {maximumWindowLength}"
+            f"Windows length cannot be less than {minimumWindowLength}"
         )
 
     #     gapOut = numpy.append(0, len(lightCurve.index))
@@ -877,8 +877,8 @@ def equivalentDurationModel(
 #         detrendedLightCurve = detrendSavGolUltraViolet(
 #             lightCurve,
 #             gaps,
-#             5,
-#             padding=padding
+#             padding,
+#             5
 #         )
 #         # print(gaps)
 
@@ -955,8 +955,8 @@ def findFlareEnergy(
     # detrendedLightCurve = detrendSavGolUltraViolet(
     #     lightCurve,
     #     gaps,
-    #     5,
-    #     padding=padding
+    #     padding,
+    #     5
     # )
     # # print(gaps)
 
@@ -1072,8 +1072,8 @@ def fluxQuiescent(
     detrendedLightCurve = detrendSavGolUltraViolet(
         lightCurve,
         gaps,
-        5,
-        padding=padding
+        padding,
+        5
     )
     # print(gaps)
 
@@ -1163,8 +1163,8 @@ def findFlares(
     detrendedLightCurve = detrendSavGolUltraViolet(
         lightCurve,
         gaps,
-        5,
-        padding=padding
+        padding,
+        5
     )
     # print(gaps)
 
