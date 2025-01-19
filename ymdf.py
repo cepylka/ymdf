@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import seaborn
 import pathlib
-# import lightkurve as lk
+import lightkurve
 
 import pandera
 from typing import Tuple, List, Optional, Any
@@ -181,7 +181,7 @@ def sigmaClip(
     - `max_iter`: how often do we want to recalculate sigma
     to get ever smaller outliers;
     - `max_sigma` where do we clip the outliers;
-    - `separate_masks`: if true, will give to boolean arrays for positive
+    - `separate_masks`: if true, will give two boolean arrays for positive
     and negative outliers;
     - `mexc`: custom mask to additionally account for.
 
@@ -355,17 +355,20 @@ def establishWindowLength(
     timeSeries: pandas.Series,
     windowLengthCandidate: int
 ) -> int:
+    # print("windowLengthCandidate",windowLengthCandidate)
     if windowLengthCandidate == 0:
         dt = numpy.nanmedian(
-            timeSeries[1:]
+            timeSeries[1:].values / 24 / 60 / 60
             -
-            timeSeries[0:-1]
+            timeSeries[0:-1].values / 24 / 60 / 60
         )
-        windowLengthCandidate = numpy.floor(0.1 / dt)
+        # print("dt", dt)
+        windowLengthCandidate = numpy.floor(0.25 / dt)
         if windowLengthCandidate % 2 == 0:
             windowLengthCandidate += 1
-
+        # print("windowLengthCandidate",windowLengthCandidate)
     # window length must be larger than polyorder
+    # print("window", max(windowLengthCandidate, 5))
     return max(windowLengthCandidate, 5)
 
 
@@ -388,6 +391,18 @@ def detrendSavGolTess(
     don't know your window length, use the default `0` value (*for calculation
     of window length for each gap*).
     """
+    if "fluxDetrended" in lightCurve.columns:
+        if not lightCurve["fluxDetrended"].isna().all():
+            print("Working with existed de-trended flux")
+            lightCurve["fluxModel"] = (
+                lightCurve["flux"]
+                -
+                lightCurve["fluxDetrended"]
+                +
+                numpy.nanmean(lightCurve["fluxDetrended"])
+            )
+            return lightCurve
+
     if not isinstance(windowLength, int):
         raise ValueError("Window length must be a number")
 
@@ -413,44 +428,54 @@ def detrendSavGolTess(
         ]
 
     for (wl, le, ri) in gaps:
+        wl = establishWindowLength(lightCurve.iloc[le:ri]["time"], wl)
         # iterative sigma clipping
         correctValues = numpy.where(
-            sigmaClip(lightCurve.iloc[le:ri]["flux"])
+            sigmaClip(lightCurve.iloc[le:ri]["flux"].values)
         )[0] + le
         # incorrect values (inverse of correct ones)
-        outliersIndexes = list(
-            set(list(range(le, ri))) - set(correctValues)
-        )
+        all_values = list(range(le, ri))
+        outliersIndexes = []
+        for index in all_values:
+            if index not in correctValues:
+                outliersIndexes.append(index)
+        print("cor and out len", len(correctValues), len(outliersIndexes))
+        # outliersIndexes = list(
+        #     set(list(range(le, ri))) - set(correctValues)
+        # )
+        # print("cor and out w/o pad", correctValues, outliersIndexes)
         outliers = addPaddingToList(
             outliersIndexes,
             padding,
             max(correctValues)
         )
-
+        # print("cor and out", correctValues, outliers)
         betweenGaps = pandas.DataFrame(columns=lightCurve.columns)
 
         for index, row in lightCurve.iterrows():
             if index in correctValues:
                 prwt = pandas.DataFrame([row], index=[index])
                 betweenGaps = pandas.concat([betweenGaps, prwt])
-            elif index in outliers:
-                lightCurve.at[index, "fluxDetrended"] = lightCurve.at[
-                    index,
-                    "flux"
-                ]
-                lightCurve.at[index, "fluxModel"] = numpy.nanmean(
-                    lightCurve["flux"]
-                )
+            # elif index in outliers:
+            #     lightCurve.at[index, "fluxDetrended"] = lightCurve.at[
+            #         index,
+            #         "flux"
+            #     ]
+            #     lightCurve.at[index, "fluxModel"] = numpy.nan
+
 
         if betweenGaps.empty:
             continue
         else:
+            # print("time", betweenGaps["time"])
             betweenGaps["fluxDetrended"] = savgol_filter(
                 betweenGaps["flux"],
-                establishWindowLength(betweenGaps["time"], wl),
+                wl,
                 3,
-                mode="nearest"
+                mode="nearest"  # "nearest"
             )
+            # print("Detrend", betweenGaps["fluxDetrended"])
+
             betweenGaps["fluxModel"] = (
                 betweenGaps["flux"]
                 -
@@ -462,16 +487,16 @@ def detrendSavGolTess(
         for index, row in lightCurve[le:ri].iterrows():
             if index in outliers:
                 lightCurve.at[index, "flareTrue"] = True
-            # else:
-            #     if index in betweenGaps.index:
-            #         lightCurve.at[index, "fluxDetrended"] = betweenGaps.at[
-            #             index,
-            #             "fluxDetrended"
-            #         ]
-            #         lightCurve.at[index, "fluxModel"] = betweenGaps.at[
-            #             index,
-            #             "fluxModel"
-            #         ]
+            else:
+                if index in betweenGaps.index:
+                    lightCurve.at[index, "fluxDetrended"] = betweenGaps.at[
+                        index,
+                        "fluxDetrended"
+                    ]
+                    lightCurve.at[index, "fluxModel"] = betweenGaps.at[
+                        index,
+                        "fluxModel"
+                    ]
 
         # flareTrues = numpy.isnan(lightCurve[le:ri]).astype(int)
 
@@ -534,8 +559,8 @@ def detrendSavGolTess(
                 if index >= off and index <= upper:
                     lightCurve.at[index, "fluxModel"] = numpy.nanmean(
                         [
-                            lightCurve.at[i, "fluxModel"].values,
-                            lightCurve.at[k, "fluxModel"].values
+                            lightCurve.at[i, "fluxModel"],
+                            lightCurve.at[k, "fluxModel"]
                         ]
                     )
             off += j + d - i
@@ -556,7 +581,7 @@ def detrendSavGolTess(
 
     # with pandas.option_context("mode.use_inf_as_null", True):
     lightCurve = lightCurve.replace([numpy.inf, -numpy.inf], numpy.nan)
-    # print(lightCurve["fluxDetrended"])
+    # print("fluxDetrended", lightCurve["fluxDetrended"])
     return lightCurve
 
 
@@ -1094,7 +1119,8 @@ def findFlares(
     padding: int,
     maximumGap: float,
     minimumObservationPeriod: float,
-    sigma: Optional[list[float]] = None,
+    fluxDetrended: Optional[List[float]] = None,
+    sigma: Optional[List[float]] = None,
     doPeriodicityRemoving: bool = False
 ) -> Tuple[pandas.DataFrame, pandas.DataFrame]:
     """
@@ -1131,6 +1157,8 @@ def findFlares(
             "fluxError": fluxErrorSeries
         }
     )
+    if fluxDetrended is not None:
+        lightCurve["fluxDetrended"] = fluxDetrended
     if max(lightCurve["fluxError"]) > min(lightCurve["flux"]):
         lightCurve["fluxError"] = max(
             1e-16,
@@ -1158,13 +1186,20 @@ def findFlares(
         # to be elevated to the main function
         minimumObservationPeriod=minimumObservationPeriod
     )
-
-    detrendedLightCurve = detrendSavGolUltraViolet(
-        lightCurve,
-        gaps,
-        padding,
-        5
-    )
+    if doPeriodicityRemoving is True:
+        detrendedLightCurve =detrendSavGolTess(
+            lightCurve,
+            gaps,
+            padding,
+            windowLength = 0
+        )
+    else:
+        detrendedLightCurve = detrendSavGolUltraViolet(
+            lightCurve,
+            gaps,
+            padding,
+            5
+        )
     # print(gaps)
 
     if detrendedLightCurve["fluxDetrended"].isna().all():
