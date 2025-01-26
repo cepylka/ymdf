@@ -103,19 +103,24 @@ def medSig(a):
 
     Adapted from K2SC (Aigrain et al. 2016).
     """
+    # might be redundant, as `a` already comes masked (so without NaNs/INFs)
     lst = numpy.isfinite(a)
+
     nfinite = lst.sum()
+    # unlikely, as for that the `a` should be all NaNs/INFs
     if nfinite == 0:
         return numpy.nan, numpy.nan
-    if nfinite == 1:
+    # not very likely either, as for that only one element from `a`
+    # should be not NaN/INF
+    elif nfinite == 1:
         return a[lst], numpy.nan
-    med = numpy.median(a[lst])
-    sig = 1.48 * numpy.median(numpy.abs(a[lst] - med))
+    else:
+        med = numpy.median(a[lst])
+        sig = 1.48 * numpy.median(numpy.abs(a[lst] - med))
+        return med, sig
 
-    return med, sig
 
-
-def expandMask(a, longdecay=1):
+def expandMask(a, longdecay: int = 1):
     """
     Expand the mask if multiple outliers occur in a row. Add
     `sqrt(outliers in a row)` masked points before and after
@@ -131,39 +136,41 @@ def expandMask(a, longdecay=1):
 
     - `array`: expanded mask
     """
-    i, j, k = 0, 0, 0
+    i = j = k = 0
 
     while i < len(a):
-        v = a[i]
+        v = bool(a[i])
 
-        if v == 0 and j == 0:
-            k += 1
-            j = 1
-            i += 1
-        elif v == 0 and j == 1:
-            k += 1
-            i += 1
-        elif v == 1 and j == 0:
-            i += 1
-        elif v == 1 and j == 1:
-            if k >= 2:
-                addto = int(numpy.rint(numpy.sqrt(k)))
-                a[i - k - addto:i - k] = 0
-                a[i:i + longdecay * addto] = 0
-                i += longdecay * addto
-            else:
+        if v is False:
+            if j == 0:
+                k += 1
+                j = 1
                 i += 1
-            j = 0
-            k = 0
+            else:
+                k += 1
+                i += 1
+        else:
+            if j == 0:
+                i += 1
+            else:
+                if k >= 2:
+                    addto = int(numpy.rint(numpy.sqrt(k)))
+                    a[i - k - addto:i - k] = False
+                    a[i:i + longdecay * addto] = False
+                    i += longdecay * addto
+                else:
+                    i += 1
+                j = 0
+                k = 0
 
     return a
 
 
 def sigmaClip(
     a,
-    max_iter=10,
-    max_sigma=3.,
-    separate_masks=False,
+    max_iter: int = 10,
+    max_sigma: float = 3.0,
+    separate_masks: bool = False,
     mexc=None
 ):
     """
@@ -189,27 +196,65 @@ def sigmaClip(
 
     - boolean array (all) or two boolean arrays (positive/negative)
     with the final outliers as zeros.
+
+    Example:
+
+    ``` py
+    search_result = lightkurve.search_lightcurve(
+        "AU Mic",
+        author="SPOC"
+    )
+    lk = search_result[1].download()
+    lkTable = lk.to_pandas()
+    #print(lkTable.columns)
+
+    flux = pandas.DataFrame(
+        columns=[
+            "time"
+        ]
+    )
+    flux["time"] = lkTable.index
+    #display(flux)
+    print(f"original length: {len(someTable.index)}") # 100736
+
+    x = sigmaClip(someTable.iloc[:-49587]["flux"].to_numpy())
+    xTrue = numpy.where(x == True)
+    #print(f"nice values: {xTrue[0].size}") # 40743
+    xFalse = numpy.where(x == False)
+    #print(f"outliers: {xFalse[0].size}") # 10406
+    ```
     """
 
     # perform sigma-clipping on finite points only,
     # or custom indices given by mexc
-    mexc = numpy.isfinite(a) if mexc is None else numpy.isfinite(a) & mexc
+    mexc = (
+        numpy.isfinite(a)
+        if mexc is None
+        else numpy.isfinite(a) & mexc
+    )
+
     # initialize different masks for up and downward outliers
-    mhigh = numpy.ones_like(mexc)
-    mlow = numpy.ones_like(mexc)
-    mask = numpy.ones_like(mexc)
+    mhigh = numpy.ones_like(mexc, dtype=bool)
+    mlow = numpy.ones_like(mexc, dtype=bool)
+    mask = numpy.ones_like(mexc, dtype=bool)
 
-    # iteratively (with i) clip outliers above(below) (-)max_sigma *sig
-    i, nm = 0, None
-
-    while (nm != mask.sum()) & (i < max_iter):
+    # iteratively (with i) clip outliers above/below (-)max_sigma * sig
+    i = 0
+    nm = None
+    while (
+        nm != mask.sum()
+        and
+        i < max_iter
+    ):
         # okay values are finite and not outliers
         mask = mexc & mhigh & mlow
+
         # safety check if the mask looks fine
         nm = mask.sum()
         if nm > 1:
             # calculate median and MAD adjusted standard deviation
             med, sig = medSig(a[mask])
+            # print(med, sig)
             # indices of okay values above median
             mhigh[mexc] = a[mexc] - med < max_sigma * sig
             # indices of okay values below median
@@ -220,6 +265,7 @@ def sigmaClip(
 
             # expand the mask left and right
             mhigh = expandMask(mhigh)
+            #print(f"- number of True in mhigh after expandMask: {numpy.where(mhigh == True)[0].size}")
 
             i += 1
 
@@ -293,7 +339,7 @@ def detrendSavGolUltraViolet(
         for (le, ri) in gaps:
             # iterative sigma clipping
             correctValues = numpy.where(
-                sigmaClip(lightCurve.iloc[le:ri]["flux"])
+                sigmaClip(lightCurve.iloc[le:ri]["flux"].values)
             )[0] + le
             # incorrect values (inverse of correct ones)
             outliersIndexes = list(
