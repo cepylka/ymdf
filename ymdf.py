@@ -208,16 +208,7 @@ def sigmaClip(
     lkTable = lk.to_pandas()
     #print(lkTable.columns)
 
-    flux = pandas.DataFrame(
-        columns=[
-            "time"
-        ]
-    )
-    flux["time"] = lkTable.index
-    #display(flux)
-    print(f"original length: {len(someTable.index)}") # 100736
-
-    x = sigmaClip(someTable.iloc[:-49587]["flux"].to_numpy())
+    x = sigmaClip(lkTable.iloc[:-49587]["flux"].to_numpy())
     xTrue = numpy.where(x == True)
     #print(f"nice values: {xTrue[0].size}") # 40743
     xFalse = numpy.where(x == False)
