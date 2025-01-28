@@ -40,7 +40,7 @@ def findGaps(
     # start
     left = gapOut[:-1]
     # end of data
-    right = gapOut[1:]-1
+    right = gapOut[1:] - 1
 
     # drop too short observation periods
     tooShort = numpy.where(numpy.diff(gapOut) < minimumObservationPeriod)
@@ -256,7 +256,7 @@ def sigmaClip(
 
             # expand the mask left and right
             mhigh = expandMask(mhigh)
-            #print(f"- number of True in mhigh after expandMask: {numpy.where(mhigh == True)[0].size}")
+            # print(f"- number of True in mhigh after expandMask: {numpy.where(mhigh == True)[0].size}")
 
             i += 1
 
@@ -306,10 +306,10 @@ def detrendSavGolUltraViolet(
     #     # )
     # print(gaps)
     lightCurve["fluxDetrended"] = numpy.array(
-        [numpy.nan]*len(lightCurve.index), dtype=float
+        [numpy.nan] * len(lightCurve.index), dtype=float
     )
     lightCurve["fluxModel"] = numpy.array(
-        [numpy.nan]*len(lightCurve.index), dtype=float
+        [numpy.nan] * len(lightCurve.index), dtype=float
     )
     if gaps is None:
         lightCurve["fluxDetrended"] = savgol_filter(
@@ -444,7 +444,8 @@ def detrendSavGolTess(
         raise ValueError("Window length must be a number")
 
     lightCurve["fluxDetrended"] = numpy.array(
-        [numpy.nan]*len(lightCurve.index), dtype=float
+        [numpy.nan] * len(lightCurve.index),
+        dtype=float
     )
 
     lightCurve["fluxModel"] = numpy.array(
