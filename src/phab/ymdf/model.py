@@ -501,7 +501,6 @@ def detrendSavGolTess(
             #     ]
             #     lightCurve.at[index, "fluxModel"] = numpy.nan
 
-
         if betweenGaps.empty:
             continue
         else:
@@ -714,7 +713,7 @@ def findFlaresInContObsPeriod(
             is_pass_thresholds[-k]
             *
             (
-                reverse_counts[-(k-1)]
+                reverse_counts[-(k - 1)]
                 +
                 is_pass_thresholds[-k]
             )
