@@ -96,7 +96,7 @@ def addPaddingToList(
     return paddedList
 
 
-def medSig(a):
+def medSig(originalArray: numpy.ndarray):
     """
     Returns median and outlier-robust estimate of standard deviation
     (1.48 x median of absolute deviations).
@@ -104,7 +104,7 @@ def medSig(a):
     Adapted from K2SC (Aigrain et al. 2016).
     """
     # might be redundant, as `a` already comes masked (so without NaNs/INFs)
-    lst = numpy.isfinite(a)
+    lst = numpy.isfinite(originalArray)
 
     nfinite = lst.sum()
     # unlikely, as for that the `a` should be all NaNs/INFs
@@ -113,14 +113,17 @@ def medSig(a):
     # not very likely either, as for that only one element from `a`
     # should be not NaN/INF
     elif nfinite == 1:
-        return a[lst], numpy.nan
+        return originalArray[lst], numpy.nan
     else:
-        med = numpy.median(a[lst])
-        sig = 1.48 * numpy.median(numpy.abs(a[lst] - med))
+        med = numpy.median(originalArray[lst])
+        sig = 1.48 * numpy.median(numpy.abs(originalArray[lst] - med))
         return med, sig
 
 
-def expandMask(a, longdecay: int = 1):
+def expandMask(
+    msk: numpy.ndarray,
+    longdecay: int = 1
+):
     """
     Expand the mask if multiple outliers occur in a row. Add
     `sqrt(outliers in a row)` masked points before and after
@@ -128,7 +131,7 @@ def expandMask(a, longdecay: int = 1):
 
     Parameters:
 
-    - `a`: mask;
+    - `msk`: mask;
     - `longdecay`: optional parameter to expand the mask more by
         this factor after the series of outliers.
 
@@ -138,8 +141,8 @@ def expandMask(a, longdecay: int = 1):
     """
     i = j = k = 0
 
-    while i < len(a):
-        v = bool(a[i])
+    while i < len(msk):
+        v = bool(msk[i])
 
         if v is False:
             if j == 0:
@@ -155,19 +158,19 @@ def expandMask(a, longdecay: int = 1):
             else:
                 if k >= 2:
                     addto = int(numpy.rint(numpy.sqrt(k)))
-                    a[i - k - addto:i - k] = False
-                    a[i:i + longdecay * addto] = False
+                    msk[i - k - addto:i - k] = False
+                    msk[i:i + longdecay * addto] = False
                     i += longdecay * addto
                 else:
                     i += 1
                 j = 0
                 k = 0
 
-    return a
+    return msk
 
 
 def sigmaClip(
-    a,
+    originalArray: numpy.ndarray,
     max_iter: int = 10,
     max_sigma: float = 3.0,
     separate_masks: bool = False,
@@ -184,7 +187,7 @@ def sigmaClip(
 
     Parameters:
 
-    - `a`: flux array;
+    - `originalArray`: flux array;
     - `max_iter`: how often do we want to recalculate sigma
     to get ever smaller outliers;
     - `max_sigma` where do we clip the outliers;
@@ -219,9 +222,9 @@ def sigmaClip(
     # perform sigma-clipping on finite points only,
     # or custom indices given by mexc
     mexc = (
-        numpy.isfinite(a)
+        numpy.isfinite(originalArray)
         if mexc is None
-        else numpy.isfinite(a) & mexc
+        else numpy.isfinite(originalArray) & mexc
     )
 
     # initialize different masks for up and downward outliers
@@ -244,12 +247,12 @@ def sigmaClip(
         nm = mask.sum()
         if nm > 1:
             # calculate median and MAD adjusted standard deviation
-            med, sig = medSig(a[mask])
+            med, sig = medSig(originalArray[mask])
             # print(med, sig)
             # indices of okay values above median
-            mhigh[mexc] = a[mexc] - med < max_sigma * sig
+            mhigh[mexc] = originalArray[mexc] - med < max_sigma * sig
             # indices of okay values below median
-            mlow[mexc] = a[mexc] - med > -max_sigma * sig
+            mlow[mexc] = originalArray[mexc] - med > -max_sigma * sig
 
             # okay values are finite and not outliers
             mask = mexc & mhigh & mlow
