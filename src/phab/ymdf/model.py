@@ -470,58 +470,44 @@ def detrendSavGolTess(
 
     for (wl, le, ri) in gaps:
         wl = establishWindowLength(lightCurve.iloc[le:ri]["time"], wl)
+
         # iterative sigma clipping
         correctValues = numpy.where(
             sigmaClip(lightCurve.iloc[le:ri]["flux"].values)
         )[0] + le
-        # incorrect values (inverse of correct ones)
-        all_values = list(range(le, ri))
+
         outliersIndexes = []
-        for index in all_values:
+        for index in list(range(le, ri)):
             if index not in correctValues:
                 outliersIndexes.append(index)
-        print("cor and out len", len(correctValues), len(outliersIndexes))
-        # outliersIndexes = list(
-        #     set(list(range(le, ri))) - set(correctValues)
-        # )
-        # print("cor and out w/o pad", correctValues, outliersIndexes)
+        # print(f"correct values count: {len(correctValues)}")
+        # print(f"outliers count: {len(outliersIndexes)}")
         outliers = addPaddingToList(
             outliersIndexes,
             padding,
             max(correctValues)
         )
-        # print("cor and out", correctValues, outliers)
-        betweenGaps = pandas.DataFrame(columns=lightCurve.columns)
 
-        for index, row in lightCurve.iterrows():
-            if index in correctValues:
-                prwt = pandas.DataFrame([row], index=[index])
-                betweenGaps = pandas.concat([betweenGaps, prwt])
-            # elif index in outliers:
-            #     lightCurve.at[index, "fluxDetrended"] = lightCurve.at[
-            #         index,
-            #         "flux"
-            #     ]
-            #     lightCurve.at[index, "fluxModel"] = numpy.nan
+        betweenGaps = lightCurve[lightCurve.index.isin(correctValues)]
 
         if betweenGaps.empty:
             continue
         else:
             # print("time", betweenGaps["time"])
-            betweenGaps["fluxDetrended"] = savgol_filter(
+            betweenGaps["fluxModel"] = savgol_filter(
                 betweenGaps["flux"],
                 wl,
                 3,
-                mode="nearest"  # "nearest"
+                mode="nearest"
             )
-            # print("Detrend", betweenGaps["fluxDetrended"])
+            # print("Detrend", betweenGaps["fluxModel"])
 
-            betweenGaps["fluxModel"] = (
+            betweenGaps["fluxDetrended"] = (
                 betweenGaps["flux"]
                 -
-                betweenGaps["fluxDetrended"]
+                betweenGaps["fluxModel"]
                 +
-                numpy.nanmean(betweenGaps["fluxDetrended"])
+                numpy.nanmean(betweenGaps["fluxModel"])
             )
 
         for index, row in lightCurve[le:ri].iterrows():
