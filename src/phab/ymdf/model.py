@@ -331,7 +331,7 @@ def detrendSavGol(
         and
         not lightCurve["fluxDetrended"].isna().all()
     ):
-        # print("Working with existed detrended flux")
+        # print("Working with existing detrended flux")
         lightCurve["fluxModel"] = (
             lightCurve["flux"]
             -
@@ -350,6 +350,11 @@ def detrendSavGol(
     )
 
     lightCurve["fluxModel"] = numpy.array(
+        [numpy.nan] * len(lightCurve.index),
+        dtype=float
+    )
+
+    lightCurve["fluxModelJ"] = numpy.array(
         [numpy.nan] * len(lightCurve.index),
         dtype=float
     )
@@ -412,9 +417,13 @@ def detrendSavGol(
                 numpy.nanmean(betweenGaps["fluxModel"])
             )
 
-        for index, row in lightCurve[le:ri].iterrows():
+        for index, row in lightCurve.iloc[le:ri].iterrows():
             if index in outliers:
                 lightCurve.at[index, "flareTrue"] = True
+                # lightCurve.at[index, "fluxDetrended"] = lightCurve.at[
+                #     index,
+                #     "flux"
+                # ]
             else:
                 if index in betweenGaps.index:
                     lightCurve.at[index, "fluxDetrended"] = betweenGaps.at[
@@ -426,18 +435,13 @@ def detrendSavGol(
                         "fluxModel"
                     ]
 
-        sta = list(
-            numpy.where(
-                numpy.diff(lightCurve[le:ri]["flareTrue"]) == 1
-            )[0]
-        )
-        fin = list(
-            numpy.where(
-                numpy.diff(lightCurve[le:ri]["flareTrue"]) == -1
-            )[0]
-        )
+        flareTrue = numpy.isnan(
+            lightCurve.iloc[le:ri]["fluxDetrended"]
+        ).astype(int)
+        sta = list(numpy.where(numpy.diff(flareTrue) == 1)[0])
+        fin = list(numpy.where(numpy.diff(flareTrue) == -1)[0])
 
-        # treat outliers at end and start of time series:
+        # treat outliers at end and start of time series
         if len(sta) > len(fin):
             fin.append(ri - le - 1)
         elif len(sta) < len(fin):
@@ -459,15 +463,13 @@ def detrendSavGol(
         # compute flux model as the mean value between
         # start and end of flare, that is, we interpolate
         # linearly
-
-        medianModel = numpy.nanmean(lightCurve["fluxModel"])
+        medianModel = numpy.nanmean(betweenGaps["fluxModel"])
         flareTrueCounts: pandas.Series = lightCurve["flareTrue"].value_counts()
         flareTrueCount: int = (
             flareTrueCounts[True]
             if True in flareTrueCounts.index
             else 0
         )
-        # print(f"flareTrueCount: {flareTrueCount}")
 
         off = 0
         for i, j in list(zip(sta, fin)):
@@ -480,7 +482,7 @@ def detrendSavGol(
                 k = j + 2
             else:
                 k = j + 2
-            k = min(len(lightCurve[le:ri]), k)
+            k = min(len(lightCurve.iloc[le:ri]), k)
 
             upper = min(j + d - i + off, flareTrueCount)
 
@@ -488,7 +490,8 @@ def detrendSavGol(
             # if k == len(lightCurve[le:ri]):
             #     k -= 1
 
-            for index, row in lightCurve[le:ri].iterrows():
+            # this is wrong, should be fluxModelJ and indexes should be like in Pandas
+            for index, row in lightCurve.iloc[le:ri].iterrows():
                 if index >= off and index <= upper:
                     lightCurve.at[index, "fluxModel"] = numpy.nanmean(
                         [
@@ -498,7 +501,7 @@ def detrendSavGol(
                     )
             off += j + d - i
 
-        for index, row in lightCurve[le:ri].iterrows():
+        for index, row in lightCurve.iloc[le:ri].iterrows():
             if lightCurve.at[index, "flareTrue"] is True:
                 lightCurve.at[index, "fluxDetrended"] = (
                     lightCurve.at[index, "flux"]
