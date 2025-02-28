@@ -40,7 +40,7 @@ def findGaps(
     # start
     left = gapOut[:-1]
     # end of data
-    right = gapOut[1:] - 1
+    right = gapOut[1:]
 
     # drop too short observation periods
     tooShort = numpy.where(numpy.diff(gapOut) < minimumObservationPeriod)
@@ -283,15 +283,14 @@ def establishWindowLength(
         else 24 * 60 * 60
     )
 
-    # print("windowLengthCandidate",windowLengthCandidate)
     if windowLengthCandidate == 0:
+        # from Appaloosa
         dt = numpy.nanmedian(
             timeSeries[1:].values / dayInSeconds
             -
             timeSeries[0:-1].values / dayInSeconds
         )
-        # print("dt", dt)
-        windowLengthCandidate = numpy.floor(0.25 / dt)
+        windowLengthCandidate = numpy.floor(0.1 / dt)  # 0.25 / dt
         if windowLengthCandidate % 2 == 0:
             windowLengthCandidate += 1
         # print("windowLengthCandidate",windowLengthCandidate)
@@ -382,13 +381,15 @@ def detrendSavGol(
         correctValues = numpy.where(
             sigmaClip(lightCurve.iloc[le:ri]["flux"].values)
         )[0] + le
+        # print(f"correct values count: {len(correctValues)}")
 
         outliersIndexes = []
+        # need to do it properly, without iterating the entire index
         for index in list(range(le, ri)):
             if index not in correctValues:
                 outliersIndexes.append(index)
-        # print(f"correct values count: {len(correctValues)}")
         # print(f"outliers count: {len(outliersIndexes)}")
+        # print(f"outliers: {lightCurve.iloc[outliersIndexes]}")
         outliers = addPaddingToList(
             outliersIndexes,
             padding,
@@ -463,7 +464,9 @@ def detrendSavGol(
         # compute flux model as the mean value between
         # start and end of flare, that is, we interpolate
         # linearly
+
         medianModel = numpy.nanmean(betweenGaps["fluxModel"])
+
         flareTrueCounts: pandas.Series = lightCurve["flareTrue"].value_counts()
         flareTrueCount: int = (
             flareTrueCounts[True]
@@ -490,15 +493,13 @@ def detrendSavGol(
             # if k == len(lightCurve[le:ri]):
             #     k -= 1
 
-            # this is wrong, should be fluxModelJ and indexes should be like in Pandas
-            for index, row in lightCurve.iloc[le:ri].iterrows():
-                if index >= off and index <= upper:
-                    lightCurve.at[index, "fluxModel"] = numpy.nanmean(
-                        [
-                            lightCurve.at[i, "fluxModel"],
-                            lightCurve.at[k, "fluxModel"]
-                        ]
-                    )
+            lightCurve.iloc[off:upper]["fluxModelJ"] = numpy.nanmean(
+                [
+                    lightCurve.iloc[i]["fluxModel"],
+                    lightCurve.iloc[k]["fluxModel"]
+                ]
+            )
+
             off += j + d - i
 
         for index, row in lightCurve.iloc[le:ri].iterrows():
@@ -506,7 +507,7 @@ def detrendSavGol(
                 lightCurve.at[index, "fluxDetrended"] = (
                     lightCurve.at[index, "flux"]
                     -
-                    lightCurve.at[index, "fluxModel"]
+                    lightCurve.at[index, "fluxModelJ"]
                     +
                     medianModel
                 )
