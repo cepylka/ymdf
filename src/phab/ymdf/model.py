@@ -378,25 +378,26 @@ def detrendSavGol(
         )
 
         # iterative sigma clipping
-        correctValues = numpy.where(
+        properValues = numpy.where(
             sigmaClip(lightCurve.iloc[le:ri]["flux"].values)
         )[0] + le
-        # print(f"correct values count: {len(correctValues)}")
+        # print(f"correct values: {len(properValues)}\n{properValues}")
 
-        outliersIndexes = []
-        # need to do it properly, without iterating the entire index
-        for index in list(range(le, ri)):
-            if index not in correctValues:
-                outliersIndexes.append(index)
-        # print(f"outliers count: {len(outliersIndexes)}")
-        # print(f"outliers: {lightCurve.iloc[outliersIndexes]}")
+        # outliersIndexes = []
+        # for index in list(range(le, ri)):
+        #     if index not in correctValues:
+        #         outliersIndexes.append(index)
+        #
+        # outliers are the "opposite" of proper values
+        outliersIndexes = list(set(list(range(le, ri))) - set(properValues))
+
         outliers = addPaddingToList(
             outliersIndexes,
             padding,
-            max(correctValues)
+            max(properValues)
         )
 
-        betweenGaps = lightCurve[lightCurve.index.isin(correctValues)]
+        betweenGaps = lightCurve[lightCurve.index.isin(properValues)]
 
         if betweenGaps.empty:
             continue
@@ -408,7 +409,7 @@ def detrendSavGol(
                 3,
                 mode="nearest"
             )
-            # print("Detrend", betweenGaps["fluxModel"])
+            # print("Flux model", betweenGaps["fluxModel"])
 
             betweenGaps["fluxDetrended"] = (
                 betweenGaps["flux"]
@@ -417,6 +418,7 @@ def detrendSavGol(
                 +
                 numpy.nanmean(betweenGaps["fluxModel"])
             )
+            # print("Flux detrended", betweenGaps["fluxDetrended"])
 
         for index, row in lightCurve.iloc[le:ri].iterrows():
             if index in outliers:
