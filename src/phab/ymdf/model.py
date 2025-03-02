@@ -397,7 +397,8 @@ def detrendSavGol(
             max(properValues)
         )
 
-        betweenGaps = lightCurve[lightCurve.index.isin(properValues)]
+        # betweenGaps = lightCurve[lightCurve.index.isin(properValues)]
+        betweenGaps = lightCurve.iloc[properValues][["flux"]]
 
         if betweenGaps.empty:
             continue
@@ -467,8 +468,6 @@ def detrendSavGol(
         # start and end of flare, that is, we interpolate
         # linearly
 
-        medianModel = numpy.nanmean(betweenGaps["fluxModel"])
-
         flareTrueCounts: pandas.Series = lightCurve["flareTrue"].value_counts()
         flareTrueCount: int = (
             flareTrueCounts[True]
@@ -495,24 +494,29 @@ def detrendSavGol(
             # if k == len(lightCurve[le:ri]):
             #     k -= 1
 
-            lightCurve.iloc[off:upper]["fluxModelJ"] = numpy.nanmean(
+            # `.loc` needs to be with -1, or you can use `.iloc`
+            # (if you know how `.iloc` would work here)
+            lightCurve.loc[off:(upper - 1), "fluxModelJ"] = numpy.nanmean(
                 [
-                    lightCurve.iloc[i]["fluxModel"],
-                    lightCurve.iloc[k]["fluxModel"]
+                    lightCurve.at[i, "fluxModel"],
+                    lightCurve.at[k, "fluxModel"]
                 ]
             )
+            # print("fluxModelJ", lightCurve.iloc[off:upper]["fluxModelJ"])
 
             off += j + d - i
 
         for index, row in lightCurve.iloc[le:ri].iterrows():
-            if lightCurve.at[index, "flareTrue"] is True:
+            if lightCurve.at[index, "flareTrue"] == True:
                 lightCurve.at[index, "fluxDetrended"] = (
                     lightCurve.at[index, "flux"]
                     -
                     lightCurve.at[index, "fluxModelJ"]
                     +
-                    medianModel
+                    numpy.nanmean(betweenGaps["fluxModel"])
                 )
+                # crude check that at least indexes are correct
+                # lightCurve.at[index, "fluxDetrended"] = 290000
         #     else:
         #         lightCurve.at[index, "fluxModel"] = numpy.nanmean(
         #             lightCurve["flux"]
