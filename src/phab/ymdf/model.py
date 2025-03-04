@@ -446,6 +446,10 @@ def detrendSavGol(
             numpy.nan
         )
 
+        # certain operations perform faster with a numpy array
+        # rather than with Pandas Series
+        fluxModel = lightCurve.iloc[le:ri]["fluxModel"].values
+
         off = 0
         for i, j in list(zip(sta, fin)):
             d = 0
@@ -457,26 +461,38 @@ def detrendSavGol(
                 k = j + 2
             else:
                 k = j + 2
-            k = min(len(lightCurve.iloc[le:ri]["fluxModel"]), k)
+            k = min(len(fluxModel), k)
 
             upper = min(j + d - i + off, len(flux_model_j))
 
             # workaround for a bug that sometimes occurs, not sure why
-            # if k == len(lightCurve.iloc[le:ri]["fluxModel"]):
+            # if k == len(fluxModel):
             #     k -= 1
 
-            flux_model_j[off:upper] = numpy.nanmean(
-                [
-                    lightCurve.at[i, "fluxModel"],
-                    lightCurve.at[k, "fluxModel"]
-                ]
-            )
+            # `.loc` needs to be with -1, or you can use `.iloc`
+            # (if you know how `.iloc` would work here)
+            # lightCurve.loc[off:(upper - 1), "fluxModelJ"] = numpy.nanmean(
+            #     [
+            #         lightCurve.at[i, "fluxModel"],
+            #         lightCurve.at[k, "fluxModel"]
+            #     ]
+            # )
+            # or
+            # flux_model_j[off:upper] = numpy.nanmean(
+            #     [
+            #         lightCurve.at[i, "fluxModel"],
+            #         lightCurve.at[k, "fluxModel"]
+            #     ]
+            # )
+            # or actually
+            flux_model_j[off:upper] = numpy.nanmean(fluxModel[[i, k]])
 
             off += j + d - i
 
-        idxer = lightCurve.iloc[le:ri][lightCurve["flareTrue"] == 1].index
-        lightCurve.loc[idxer, "fluxDetrended"] = (
-            lightCurve.iloc[idxer]["flux"]
+        # indxer = lightCurve.iloc[le:ri][lightCurve["flareTrue"] == 1].index
+        indxer = lightCurve.iloc[le:ri].query("flareTrue == 1").index
+        lightCurve.loc[indxer, "fluxDetrended"] = (
+            lightCurve.iloc[indxer]["flux"]
             -
             flux_model_j
             +
