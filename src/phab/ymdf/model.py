@@ -377,7 +377,6 @@ def detrendSavGol(
         properValues = numpy.where(
             sigmaClip(lightCurve.iloc[le:ri]["flux"].values)
         )[0] + le
-        # print(f"correct values: {len(properValues)}\n{properValues}")
 
         wl = establishWindowLength(
             lightCurve.iloc[le:ri]["time"],
@@ -406,16 +405,14 @@ def detrendSavGol(
         ).astype(int)
 
         x = numpy.where(flareTrue)[0]
-        # print("x", x)
-        # print("flareTrue", type(flareTrue), len(flareTrue))
-        # print(numpy.unique(flareTrue, return_counts=True))
+        # there might be something wrong or at least suboptimal/redundant
+        # about this particular padding implementation
         for i in range(-padding, padding + 1):
             y = x + i
             y[numpy.where(y > len(flareTrue) - 1)] = len(flareTrue) - 1
             flareTrue[y] = 1
 
         lightCurve.loc[le:(ri - 1), "flareTrue"] = flareTrue
-        # print("flare true inside", lightCurve.iloc[le:ri]["flareTrue"].value_counts())
 
         sta = list(numpy.where(numpy.diff(flareTrue) == 1)[0])
         fin = list(numpy.where(numpy.diff(flareTrue) == -1)[0])
