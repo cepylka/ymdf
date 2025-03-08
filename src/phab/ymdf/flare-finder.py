@@ -638,7 +638,7 @@ def findFlaresInContObsPeriod(
     isFlare = numpy.zeros_like(flux, dtype="bool")
 
     for (l, r) in list(zip(istart_i, istop_i)):
-        isFlare[l:r+1] = True
+        isFlare[l:(r + 1)] = True
 
     return isFlare
 
@@ -706,7 +706,7 @@ def equivalentDuration(
             numpy.nanmedian(lct["iterativeMedian"].values)
         )
     )
-    edError = numpy.sqrt(ed**2 / (stop-1-start) / flare_chisq)
+    edError = numpy.sqrt(ed**2 / (stop - 1 - start) / flare_chisq)
     return ed, edError
     # else:
     #     return ed
@@ -764,12 +764,15 @@ def equivalentDurationModel(
     return ed
     # else:
     #     return ed
+
+
 # def equivalentDurationModelT(
 #     timeSeries,
 #     fluxSeries,
 #     fluxErrorSeries,
 #     start,
-#     stop
+#     stop,
+#     waveRange: Literal["uv", "photo"],
 #     # error=False #always return errors
 # ) -> float | Tuple[float, float]:
 #     """
@@ -815,10 +818,11 @@ def equivalentDurationModel(
 #             minimumObservationPeriod=minimumObservationPeriod
 #         )
 
-#         detrendedLightCurve = detrendSavGolUltraViolet(
+#         detrendedLightCurve = detrendSavGol(
 #             lightCurve,
 #             gaps,
 #             padding,
+#             waveRange,
 #             5
 #         )
 #         # print(gaps)
@@ -868,6 +872,7 @@ def findFlareEnergy(
     minimumObservationPeriod,
     padding,
     minimumerror,
+    waveRange: Literal["uv", "photo"]
 ):
     # lightCurve = pandas.DataFrame(
     #     {
@@ -893,10 +898,11 @@ def findFlareEnergy(
     #     minimumObservationPeriod=minimumObservationPeriod
     # )
 
-    # detrendedLightCurve = detrendSavGolUltraViolet(
+    # detrendedLightCurve = detrendSavGol(
     #     lightCurve,
     #     gaps,
     #     padding,
+    #     waveRange,
     #     5
     # )
     # # print(gaps)
@@ -918,7 +924,8 @@ def findFlareEnergy(
         maximumGap,
         minimumObservationPeriod,
         padding,
-        minimumerror
+        minimumerror,
+        waveRange
     )
     foundFlares["luminosity quiscent"] = numpy.array(numpy.NaN, dtype=float)
     foundFlares["flare_erg"] = numpy.array(numpy.NaN, dtype=float)
@@ -945,7 +952,8 @@ def luminosityQuiescent(
     maximumGap,
     minimumObservationPeriod,
     padding,
-    minimumerror
+    minimumerror,
+    waveRange: Literal["uv", "photo"]
 ):
     integrated_flux = (
         fluxQuiescent(
@@ -955,13 +963,14 @@ def luminosityQuiescent(
             maximumGap,
             minimumObservationPeriod,
             padding,
-            minimumerror
+            minimumerror,
+            waveRange
         )
         *
         (
-            (starDistance*units.pc).to("cm")
+            (starDistance * units.pc).to("cm")
             /
-            (starRadius*constants.R_sun.to("cm"))
+            (starRadius * constants.R_sun.to("cm"))
         )**2
     )
 
@@ -970,7 +979,7 @@ def luminosityQuiescent(
         *
         numpy.pi
         *
-        (starRadius*constants.R_sun.to("cm")) ** 2
+        (starRadius * constants.R_sun.to("cm")) ** 2
     )
 
     return lum.value
@@ -983,7 +992,8 @@ def fluxQuiescent(
     maximumGap,
     minimumObservationPeriod,
     padding,
-    minimumerror
+    minimumerror,
+    waveRange: Literal["uv", "photo"]
 ):
     lightCurve = pandas.DataFrame(
         {
@@ -1010,10 +1020,11 @@ def fluxQuiescent(
         minimumObservationPeriod=minimumObservationPeriod
     )
 
-    detrendedLightCurve = detrendSavGolUltraViolet(
+    detrendedLightCurve = detrendSavGol(
         lightCurve,
         gaps,
         padding,
+        waveRange,
         5
     )
     # print(gaps)
@@ -1100,7 +1111,7 @@ def findFlares(
         gaps,
         padding,
         waveRange,
-        windowLength=0
+        0
     )
 
     if detrendedLightCurve["fluxDetrended"].isna().all():
@@ -1306,12 +1317,12 @@ def findFakeFlares(
             for (i, j) in zip(istart, istop):
                 lct = temp_lightCurve.loc[i:j]
                 residual = (
-                        lct["fluxDetrended"].values
-                        /
-                        numpy.nanmedian(lct["iterativeMedian"].values)
-                        -
-                        1.0
-                    )
+                    lct["fluxDetrended"].values
+                    /
+                    numpy.nanmedian(lct["iterativeMedian"].values)
+                    -
+                    1.0
+                )
                 x = lct["time"].values  # in seconds, so for days you'll need to add `* 60.0 * 60.0 * 24.0`
                 ed_fake_val = numpy.sum(numpy.diff(x) * residual[:-1])
                 ed_fake.append(ed_fake_val)
@@ -1339,8 +1350,8 @@ def findFakeFlares(
                     "ampl_rec": ampl_rec,
                     "total_n_valid_data_points": len(lightCurve["flux"]),
                     "dur": tstop - tstart
-                  }
-              )
+                }
+            )
 
             flares = pandas.concat([flares, newFlare], ignore_index=True)
             # print(flares)
@@ -1670,7 +1681,7 @@ def injectFakeFlares(
     ampl,
     dur,
     model="mendoza2022",
-    fakefreq=0.0005,#/24/60/60, # we need to allow user to choose flare freq, so elevate to characterise flares
+    fakefreq=0.0005,  # /24/60/60, # we need to allow user to choose flare freq, so elevate to characterise flares
     maxFlaresPerGap=2,
     d=False,
     seed=None
@@ -1967,13 +1978,12 @@ def sampleFlareRecovery(
                     injs.at[r, "rec"] = 0
         for r, row in injs.iterrows():
             if row["rec"] == 0:
-                recs.at[len_of_table+m, "duration_d"] = injs.at[r, "duration_d"]
-                recs.at[len_of_table+m, "amplitude"] = injs.at[r, "amplitude"]
-                recs.at[len_of_table+m, "ed_inj"] = injs.at[r, "ed_inj"]
-                recs.at[len_of_table+m, "peak_time"] = injs.at[r, "peak_time"]
-                recs.at[len_of_table+m, "rec"] = 0
+                recs.at[len_of_table + m, "duration_d"] = injs.at[r, "duration_d"]
+                recs.at[len_of_table + m, "amplitude"] = injs.at[r, "amplitude"]
+                recs.at[len_of_table + m, "ed_inj"] = injs.at[r, "ed_inj"]
+                recs.at[len_of_table + m, "peak_time"] = injs.at[r, "peak_time"]
+                recs.at[len_of_table + m, "rec"] = 0
                 m += 1
-
 
         bar.update(itera + 1)
 
@@ -2438,8 +2448,8 @@ def characterizeFlares(
             else:
                 fake_flares.at[index, "rec"] = 0.0
 
-    ampl_bins = numpy.arange(ampl[0], ampl[1], (ampl[1] - ampl[0])/15.0)
-    dur_bins = numpy.arange(dur[0], dur[1], (dur[1] - dur[0])/15.0)
+    ampl_bins = numpy.arange(ampl[0], ampl[1], (ampl[1] - ampl[0]) / 15.0)
+    dur_bins = numpy.arange(dur[0], dur[1], (dur[1] - dur[0]) / 15.0)
     # print("fake_flares", fake_flares)
     fake_flares_cop = fake_flares.query(
         "`amplitude`.notna() & `duration_d`.notna()"
@@ -2536,7 +2546,7 @@ def characterizeFlares(
             amp = flares.at[index, "ampl_rec"]
             savule, counts = findIntervalValue(amp, dura, ratio, typ)
             print(savule)
-            flares.at[index,typ] = savule
+            flares.at[index, typ] = savule
 
         if plot_heatmap == True and typ == "ed_ratio":
             plotHeatmap(
