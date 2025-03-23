@@ -506,7 +506,7 @@ def findIterativeMedian(
     lightCurve: pandas.DataFrame,
     gaps: List[Tuple[int, int]],
     n: int = 30
-) -> pandas.DataFrame:
+) -> pandas.DataFrame:  # should return pandas.Series or just numpy.ndarray
     """
     Find the iterative median value for a continuous observation period
     using flare finding to identify outliers.
@@ -518,19 +518,31 @@ def findIterativeMedian(
     - `n`: maximum number of iterations.
     """
 
-    lightCurve["iterativeMedian"] = numpy.array(numpy.NaN, dtype=float)
+    lightCurve["iterativeMedian"] = numpy.array(numpy.nan, dtype=float)
 
+    alreadyHaveDetrended: bool = False
+    # need to think about it some more, as this one has paddings,
+    # while sigmaClip() does not
+    # if "flareTrue" in lightCurve.columns:  # got this from detrendSavGol()
+    #     alreadyHaveDetrended = True
+
+    # find a median that is not skewed by outliers
     for (le, ri) in gaps:
-        flux = lightCurve.iloc[le:ri]["fluxDetrended"].values
-        # find a median that is not skewed by outliers
-        good = sigmaClip(flux)
-        goodflux = flux[good]
-        for index, row in lightCurve.iterrows():
-            if index in range(le, ri + 1):
-                lightCurve.at[
-                    index,
-                    "iterativeMedian"
-                ] = numpy.nanmedian(goodflux)
+        if alreadyHaveDetrended:  # padded outliers
+            indxer = lightCurve.iloc[le:ri].query("flareTrue == 0").index
+            lightCurve.loc[le:(ri - 1), "iterativeMedian"] = numpy.nanmedian(
+                lightCurve.loc[indxer, "fluxDetrended"]
+            )
+        else:
+            properValues = numpy.where(
+                sigmaClip(
+                    lightCurve.iloc[le:ri]["fluxDetrended"].values,
+                    max_iter=n
+                )
+            )[0] + le
+            lightCurve.loc[le:(ri - 1), "iterativeMedian"] = numpy.nanmedian(
+                lightCurve.loc[properValues, "fluxDetrended"]
+            )
 
     return lightCurve
 
