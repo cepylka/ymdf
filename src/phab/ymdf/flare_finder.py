@@ -1091,8 +1091,8 @@ def findFlares(
         index=pandera.Index(int),  # also check that it is increasing
         columns={
             "time": pandera.Column(float),
-            "flux": pandera.Column(float),
-            "fluxError": pandera.Column(float),
+            "flux": pandera.Column(pandera.dtypes.Float32),
+            "fluxError": pandera.Column(pandera.dtypes.Float32),
             "fluxDetrended": pandera.Column(float, required=False)
         }
     )
@@ -1429,7 +1429,7 @@ def flareEqn(t, tpeak, fwhm, ampl):
             *
             f2
             *
-            numpy.exp(-D2 * t+ ((B / C) + (D2 * C / 2)) ** 2)
+            numpy.exp(-D2 * t + ((B / C) + (D2 * C / 2)) ** 2)
             *
             special.erfc(((B - t) / C) + (C * D2 / 2))
         )
@@ -1867,10 +1867,10 @@ def injectFakeFlares(
             )
             ed_fake = numpy.sum(numpy.diff(time_chunks[k]) * residual[:-1])
 
-            fake_flares.at[s+k, "duration_d"] = dur_fake[k]
-            fake_flares.at[s+k, "amplitude"] = ampl_fake[k]
-            fake_flares.at[s+k, "ed_inj"] = ed_fake
-            fake_flares.at[s+k, "peak_time"] = t0
+            fake_flares.at[s + k, "duration_d"] = dur_fake[k]
+            fake_flares.at[s + k, "amplitude"] = ampl_fake[k]
+            fake_flares.at[s + k, "ed_inj"] = ed_fake
+            fake_flares.at[s + k, "peak_time"] = t0
 
     # error minimum is a safety net for the spline function if `mode == 3`
     lc_fake["fluxDetrendedError"] = max(
@@ -1897,12 +1897,9 @@ def sampleFlareRecovery(
     minSep,
     maximumGap,
     minimumObservationPeriod,
-    mode=None,
-    func=None,
     fakefreq=0.0005,
-    path=None,
     maxFlaresPerGap=2
-):
+) -> Tuple[pandas.DataFrame, pandas.DataFrame]:
     """
     Runs a number of injection recovery cycles and characterizes the light
     curve by recovery probability and equivalent duration underestimation.
