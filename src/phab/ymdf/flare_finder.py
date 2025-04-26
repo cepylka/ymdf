@@ -304,7 +304,8 @@ def detrendSavGol(
     gaps: List[Tuple[int, int]],
     padding: int,
     waveRange: Literal["uv", "photo"],
-    windowLength: int = 0
+    windowLength: int = 0,
+    # sym=False
 ) -> pandas.DataFrame:
     """
     Construct a light curve model. Based on original Appaloosa (Davenport 2016)
@@ -339,7 +340,8 @@ def detrendSavGol(
             numpy.nanmean(lightCurve["fluxDetrended"])
         )
         return lightCurve
-
+    # elif sym==True:
+    #     return lightCurve
     if not isinstance(windowLength, int):
         raise ValueError("Window length must be a number")
 
@@ -505,7 +507,8 @@ def detrendSavGol(
 def findIterativeMedian(
     lightCurve: pandas.DataFrame,
     gaps: List[Tuple[int, int]],
-    n: int = 30
+    n: int = 30,
+    # sym=False
 ) -> pandas.DataFrame:  # should return pandas.Series or just numpy.ndarray
     """
     Find the iterative median value for a continuous observation period
@@ -523,6 +526,8 @@ def findIterativeMedian(
         not lightCurve["iterativeMedian"].isna().all()
     ):
         return lightCurve
+    # elif sym==True:
+    #     return lightCurve
 
     lightCurve["iterativeMedian"] = numpy.array(numpy.nan, dtype=float)
 
@@ -1021,15 +1026,6 @@ def fluxQuiescent(
             "fluxError": fluxErrorSeries
         }
     )
-    if max(lightCurve["fluxError"]) > min(lightCurve["flux"]):
-        lightCurve["fluxError"] = max(
-            minimumerror,
-            numpy.nanmedian(
-                pandas.Series(
-                    lightCurve["flux"]
-                ).rolling(3, center=True).std()
-            )
-        ) * numpy.ones_like(lightCurve["flux"])
 
     gaps = findGaps(
         lightCurve,
@@ -1047,6 +1043,20 @@ def fluxQuiescent(
         5
     )
     # print(gaps)
+    detrendedLightCurve["fluxDetrendedError"] = detrendedLightCurve["fluxError"]
+    for (le,ri) in gaps:
+        medianL, sigmaL = medSig(detrendedLightCurve.loc[le:ri, "fluxDetrended"])
+
+        if max(detrendedLightCurve.loc[le:ri, "fluxDetrendedError"]) > sigmaL/1.48:
+            detrendedLightCurve.loc[le:ri, "fluxDetrendedError"] = max(
+                1e-16,
+                numpy.nanmedian(
+                    pandas.Series(
+                        detrendedLightCurve.loc[le:ri, "fluxDetrended"]
+                    ).rolling(3, center=True).std()
+                )
+            ) * numpy.ones_like(lightCurve.loc[le:ri, "fluxDetrended"])
+
 
     if detrendedLightCurve["fluxDetrended"].isna().all():
         raise ValueError("Finding flares only works on detrended light curves")
@@ -1066,7 +1076,8 @@ def findFlares(
     minimumObservationPeriod: float,
     waveRange: Literal["uv", "photo"],
     fluxDetrended: Optional[List[float]] = None,
-    sigma: Optional[List[float]] = None
+    sigma: Optional[List[float]] = None,
+    # sym=False
 ) -> Tuple[pandas.DataFrame, pandas.DataFrame]:
     """
     Obtaining and processing a light curve.
@@ -1106,15 +1117,6 @@ def findFlares(
     )
     lightCurveTableSchema(lightCurve)
 
-    if max(lightCurve["fluxError"]) > min(lightCurve["flux"]):
-        lightCurve["fluxError"] = max(
-            1e-16,
-            numpy.nanmedian(
-                pandas.Series(
-                    lightCurve["flux"]
-                ).rolling(3, center=True).std()
-            )
-        ) * numpy.ones_like(lightCurve["flux"])
 
     flares = pandas.DataFrame()
 
@@ -1126,21 +1128,24 @@ def findFlares(
         minimumObservationPeriod=minimumObservationPeriod
     )
 
+
     detrendedLightCurve = detrendSavGol(
         lightCurve,
         gaps,
         padding,
         waveRange,
-        0
+        0,
+        # sym
     )
 
     if detrendedLightCurve["fluxDetrended"].isna().all():
         raise ValueError("Finding flares only works on detrended light curves")
 
-    detrendedLightCurve = findIterativeMedian(detrendedLightCurve, gaps, 30)
-
+    detrendedLightCurve = findIterativeMedian(detrendedLightCurve, gaps, 30)#, sym)
+    print("fromfinder", detrendedLightCurve)
     istart = numpy.array([], dtype="int")
     istop = numpy.array([], dtype="int")
+    detrendedLightCurve["fluxDetrendedError"] = detrendedLightCurve["fluxError"]
     # detrendedLightCurve["fluxDetrendedError"] = max(
     #         1e-16,
     #         numpy.nanmedian(
@@ -1152,8 +1157,19 @@ def findFlares(
     isFlare = None
     # work on periods of continuous observation with no gaps
     for (le, ri) in gaps:
+        medianL, sigmaL = medSig(lightCurve[le:ri]["fluxDetrended"])
 
-        error = detrendedLightCurve.iloc[le:ri]["fluxError"]
+        if max(lightCurve["fluxDetrendedError"]) > sigmaL/1.48:
+            lightCurve["fluxDetrendedError"] = max(
+                1e-16,
+                numpy.nanmedian(
+                    pandas.Series(
+                        lightCurve["fluxDetrended"]
+                    ).rolling(3, center=True).std()
+                )
+            ) * numpy.ones_like(lightCurve["flux"])
+
+        error = detrendedLightCurve.iloc[le:ri]["fluxDetrendedError"]
         flux = detrendedLightCurve.iloc[le:ri]["fluxDetrended"]
         median = detrendedLightCurve.iloc[le:ri]["iterativeMedian"]
         time = detrendedLightCurve.iloc[le:ri]["time"]
@@ -1543,12 +1559,75 @@ def findFlares(
 
     # return flares
 
-def flareEqn(t, tpeak, fwhm, ampl):
+# def flareEqn(t, tpeak, fwhm):
+#     """
+#     The equation that defines the shape for the Continuous Flare Model
+#     t to days for stability
+#     """
+#     # values were fit and calculated using MCMC 256 walkers and 30000 steps
+#     A, B, C, D1, D2, f1 = [
+#         0.9687734504375167,
+#         -0.251299705922117,
+#         0.22675974948468916,
+#         0.15551880775110513,
+#         1.2150539528490194,
+#         0.12695865022878844
+#     ]
+
+#     # we include the corresponding errors for each parameter
+#     # from the MCMC analysis
+#     A_err, B_err, C_err, D1_err, D2_err, f1_err = [
+#         0.007941622683556804,
+#         0.0004073709715788909,
+#         0.0006863488251125649,
+#         0.0013498012884345656,
+#         0.00453458098656645,
+#         0.001053149344530907
+#     ]
+
+#     f2 = 1 - f1
+
+#     eqn = (
+#         (
+#             (1 / 2)
+#             *
+#             numpy.sqrt(numpy.pi)
+#             *
+#             A
+#             *
+#             C
+#             *
+#             f1
+#             *
+#             numpy.exp(-D1 * t + ((B / C) + (D1 * C / 2)) ** 2)
+#             *
+#             special.erfc(((B - t) / C) + (C * D1 / 2))
+#         )
+#         +
+#         (
+#             (1 / 2)
+#             *
+#             numpy.sqrt(numpy.pi)
+#             *
+#             A
+#             *
+#             C
+#             *
+#             f2
+#             *
+#             numpy.exp(-D2 * t + ((B / C) + (D2 * C / 2)) ** 2)
+#             *
+#             special.erfc(((B - t) / C) + (C * D2 / 2))
+#         )
+#     )
+
+#     return eqn
+
+
+def flareEqn(t, tpeak, fwhm):
     """
     The equation that defines the shape for the Continuous Flare Model
     """
-
-    # values were fit and calculated using MCMC 256 walkers and 30000 steps
     A, B, C, D1, D2, f1 = [
         0.9687734504375167,
         -0.251299705922117,
@@ -1557,55 +1636,34 @@ def flareEqn(t, tpeak, fwhm, ampl):
         1.2150539528490194,
         0.12695865022878844
     ]
-
-    # we include the corresponding errors for each parameter
-    # from the MCMC analysis
-    A_err, B_err, C_err, D1_err, D2_err, f1_err = [
-        0.007941622683556804,
-        0.0004073709715788909,
-        0.0006863488251125649,
-        0.0013498012884345656,
-        0.00453458098656645,
-        0.001053149344530907
-    ]
-
     f2 = 1 - f1
 
+    # Validate inputs
+    # t = numpy.asarray(t)
+    # if numpy.any(t < 0):
+    #     raise ValueError("Time `t` must be non-negative.")
+    # if numpy.any(numpy.isnan(t)) or numpy.any(numpy.isinf(t)):
+    #     raise ValueError("Time `t` contains NaN/inf values.")
+
+    # Clip erfc inputs to avoid NaN
+    erfc_input1 = numpy.clip((B - t) / C + C * D1 / 2, -50, 50)
+    erfc_input2 = numpy.clip((B - t) / C + C * D2 / 2, -50, 50)
+
+    # Compute terms
+    exp_term1 = numpy.exp(-D1 * t + (B / C + D1 * C / 2) ** 2)
+    exp_term2 = numpy.exp(-D2 * t + (B / C + D2 * C / 2) ** 2)
+
     eqn = (
-        (
-            (1 / 2)
-            *
-            numpy.sqrt(numpy.pi)
-            *
-            A
-            *
-            C
-            *
-            f1
-            *
-            numpy.exp(-D1 * t + ((B / C) + (D1 * C / 2)) ** 2)
-            *
-            special.erfc(((B - t) / C) + (C * D1 / 2))
-        )
-        +
-        (
-            (1 / 2)
-            *
-            numpy.sqrt(numpy.pi)
-            *
-            A
-            *
-            C
-            *
-            f2
-            *
-            numpy.exp(-D2 * t + ((B / C) + (D2 * C / 2)) ** 2)
-            *
-            special.erfc(((B - t) / C) + (C * D2 / 2))
+        0.5 * numpy.sqrt(numpy.pi) * A * C * (
+            f1 * exp_term1 * special.erfc(erfc_input1) +
+            f2 * exp_term2 * special.erfc(erfc_input2)
         )
     )
 
-    return eqn * ampl
+    # Replace any remaining NaN/inf
+    eqn = numpy.nan_to_num(eqn, nan=0.0, posinf=1e10, neginf=-1e10)
+
+    return eqn
 
 
 def flareModelMendoza2022(t, tpeak, fwhm, ampl, upsample=False, uptime=0.5):
@@ -1634,7 +1692,9 @@ def flareModelMendoza2022(t, tpeak, fwhm, ampl, upsample=False, uptime=0.5):
     and double exponential and can be parameterized by three parameters:
     center time (tpeak), FWHM, and ampitude.
     """
-
+    t = t / 24. / 60. / 60.
+    tpeak = tpeak / 24. / 60. / 60.
+    fwhm = fwhm / 24. / 60. / 60.
     t_new = (t - tpeak) / fwhm
 
     if upsample:
@@ -1645,7 +1705,7 @@ def flareModelMendoza2022(t, tpeak, fwhm, ampl, upsample=False, uptime=0.5):
             t_new.size * uptime
         )
 
-        flareup = flareEqn(timeup, tpeak, fwhm, ampl)
+        flareup = flareEqn(timeup, tpeak, fwhm)
 
         # and now downsample back to the original time
         downbins = numpy.concatenate(
@@ -1658,9 +1718,9 @@ def flareModelMendoza2022(t, tpeak, fwhm, ampl, upsample=False, uptime=0.5):
             bins=numpy.sort(downbins)
         )[0]
     else:
-        flare = flareEqn(t_new, tpeak, fwhm, ampl)
+        flare = flareEqn(t_new, tpeak, fwhm)
 
-    return flare
+    return flare * ampl
 
 
 def flareModelDavenport2014(t, tpeak, dur, ampl, upsample=False, uptime=10):
@@ -1692,6 +1752,9 @@ def flareModelDavenport2014(t, tpeak, dur, ampl, upsample=False, uptime=10):
     _fd = [0.689008, -1.60053, 0.302963, -0.278318]
 
     fwhm = dur / 2.0  # crude approximation for a triangle shape
+    t = t / 24. / 60. / 60.
+    tpeak = tpeak / 24. / 60. / 60.
+    fwhm = fwhm / 24. / 60. / 60.
 
     if upsample:
         dt = numpy.nanmedian(numpy.diff(t))
@@ -1894,8 +1957,8 @@ def injectFakeFlares(
     # print("before", lc["fluxDetrended"])
 
     lc_fake = lc.copy()
-    lc_fake["fluxDetrendedError"] = numpy.array(numpy.NaN, dtype=float)
-
+    lc_fake["fluxDetrendedError"] = lc_fake["fluxError"]
+    print("lc_fakeItMed", lc_fake["iterativeMedian"])
     lc_fake["flare_flux"] = 0.0
     lc_fake_single_column = lc_fake[['fluxDetrended']].copy()
     # print("lc_fake.columns", lc_fake.columns)
@@ -1942,6 +2005,22 @@ def injectFakeFlares(
     real_flares_in_gap = pandas.DataFrame()
     chislo=[]
     for s, (le, ri) in enumerate(gaps):
+
+        # lc_fake.loc[le:ri,"fluxDetrendedError"] = lc_fake.loc[le:ri,"fluxError"]
+
+
+        medianL, sigmaL = medSig(lc_fake[le:ri]["fluxDetrended"])
+
+        if max(lc_fake.loc[le:ri,"fluxDetrendedError"]) > sigmaL/1.48:
+            lc_fake.loc[le:ri,"fluxDetrendedError"] = max(
+                1e-16,
+                numpy.nanmedian(
+                    pandas.Series(
+                        lc_fake.loc[le:ri,"fluxDetrended"]
+                    ).rolling(3, center=True).std()
+                )
+            ) * numpy.ones_like(lc_fake.loc[le:ri,"fluxDetrended"])
+
         real_flares_in_gap = pandas.DataFrame()
         real_flares_in_gap = flares.query("`istart` >= @le & `istop` <= @ri")
         nfake= max(
@@ -2003,37 +2082,38 @@ def injectFakeFlares(
 
                 # add the peak time to the list
                 # generate the flare flux from the Davenport 2014 model
-                start_time = t0 - dur_fake[k]
+                start_time = t0 - dur_fake[k]- dur_fake[k]/numpy.log(2.)
                 end_time = t0 + dur_fake[k]+ dur_fake[k]/numpy.log(2.)
                 start_time = numpy.clip(start_time, time[0], time[-1])
                 end_time = numpy.clip(end_time, time[0], time[-1])
                 # print("start_time, end_time", start_time, end_time)
                 indices = []
                 indices = numpy.where((lc_fake["time"] >= start_time) & (lc_fake["time"] <= end_time))[0]
+
                 # print("indices",indices)
                 if len(indices)>1:
                     check = True
             if model == "davenport2014":
                 fluxy = flareModelDavenport2014(
                     # time_chunks[k].tolist(),
-                    lc_fake.loc[indices,"time"].values,
+                    time, #lc_fake.loc[indices,"time"].values,
                     t0,
                     dur_fake[k],
                     ampl_fake[k]
                 )
                 # print(fluxy)
-                lc_fake.loc[indices,"flare_flux"] = fluxy
+                lc_fake.loc[le:ri,"flare_flux"] = fluxy
                 # print(lc_fake.loc[indices,"flare_flux"])
             elif model == "mendoza2022":
                 fluxy = flareModelMendoza2022(
                     # time_chunks[k].tolist(),
-                    lc_fake.loc[indices,"time"].values,
+                    time, #lc_fake.loc[indices,"time"].values,
                     t0,
                     dur_fake[k],
                     ampl_fake[k]
                 )
                 # print(fluxy)
-                lc_fake.loc[indices,"flare_flux"] = fluxy
+                lc_fake.loc[le:ri,"flare_flux"] = fluxy
                 # print(lc_fake.loc[indices,"flare_flux"])
             else:
                 raise ValueError(f"Unknown flare model: {model}")
@@ -2060,9 +2140,10 @@ def injectFakeFlares(
             # print("shape",time[indices].shape,residual[:-1].shape)
             # ed_fake = numpy.sum(numpy.diff(time_chunks[k]) * residual[:-1])
             # ed_fake = numpy.sum(numpy.diff(time[indices]) * fl_flux[:-1]) #residual[:-1])
-            fluxy = lc_fake.loc[indices, "flare_flux"].iloc[:-1].values
+            # fluxy1 = lc_fake.loc[indices, "flare_flux"].iloc[:-1].values
             # print("fluxy", fluxy)
-            ed_fake = numpy.sum(numpy.diff(lc_fake.loc[indices,"time"].values) * fluxy) #residual[:-1])
+            # ed_fake = numpy.sum(numpy.diff(lc_fake.loc[indices,"time"].values) * fluxy1) #residual[:-1])
+            ed_fake = numpy.sum(numpy.diff(time) * fluxy[:-1]) #residual[:-1])
 
             print(ed_fake, "edfake")
 
@@ -2074,30 +2155,44 @@ def injectFakeFlares(
             fake_flares.at[indexk, "amplitude"] = ampl_fake[k]
             fake_flares.at[indexk, "ed_inj"] = ed_fake
             fake_flares.at[indexk, "peak_time"] = t0
-        # print("resulting flux with flares", lc_fake["flare_flux"])
-        # for index, row in lc_fake[le:ri].iterrows():
-        #     adf = (
-        #         lc_fake.at[index, "fluxDetrended"]
-        #         +
-        #         lc_fake.at[index,"flare_flux"] * numpy.nanmedian(lc_fake[le:ri]["iterativeMedian"].values)
-        #     )
-        #     lc_fake.at[index, "fluxDetrended"] = adf
-        # print(lc_fake.loc[le:ri]["fluxDetrended"])
-        lc_fake_single_column.loc[le:ri, "fluxDetrended"] = (
-                lc_fake.loc[le:ri, "fluxDetrended"].values +
-                lc_fake.loc[le:ri, "flare_flux"].values *
-                numpy.nanmedian(lc_fake.loc[le:ri, "iterativeMedian"].values)
-                )
-         # error minimum is a safety net for the spline function if `mode == 3`
-    lc_fake["fluxDetrended"] = lc_fake_single_column["fluxDetrended"].values
-    lc_fake["fluxDetrendedError"] = max(
-        1e-16,
-        numpy.nanmedian(
-            pandas.Series(
-                lc_fake["fluxDetrended"]
-            ).rolling(3, center=True).std()
+                            # print("resulting flux with flares", lc_fake["flare_flux"])
+                            # for index, row in lc_fake[le:ri].iterrows():
+                            #     adf = (
+                            #         lc_fake.at[index, "fluxDetrended"]
+                            #         +
+                            #         lc_fake.at[index,"flare_flux"] * numpy.nanmedian(lc_fake[le:ri]["iterativeMedian"].values)
+                            #     )
+                            #     lc_fake.at[index, "fluxDetrended"] = adf
+                            # print(lc_fake.loc[le:ri]["fluxDetrended"])
+            new_indices = numpy.argwhere(lc_fake.loc[le:ri,"flare_flux"] >= 1e-4).flatten()
+            print("new_indices", new_indices)
+            lc_fake.loc[new_indices, "fluxDetrended"] = (
+                    lc_fake.loc[new_indices+le, "fluxDetrended"].values +
+                    lc_fake.loc[new_indices+le, "flare_flux"].values *
+                    numpy.nanmedian(lc_fake.loc[le:ri, "iterativeMedian"].values)
+                    )
+
+        # lc_fake_single_column.loc[le:ri, "fluxDetrended"] = (
+        #         lc_fake.loc[le:ri, "fluxDetrended"].values +
+        #         lc_fake.loc[le:ri, "flare_flux"].values *
+        #         numpy.nanmedian(lc_fake.loc[le:ri, "iterativeMedian"].values)
+        #         )
+
+
+
+    # lc_fake["fluxDetrended"] = lc_fake_single_column["fluxDetrended"].values
+
+    # error minimum is a safety net for the spline function if `mode == 3????
+    for (le,ri) in gaps:
+        properValues = numpy.where(
+            sigmaClip(
+                lc_fake.iloc[le:ri]["fluxDetrended"].values,
+                max_iter=30
+            )
+        )[0] + le
+        lc_fake.loc[le:(ri - 1), "iterativeMedian"] = numpy.nanmedian(
+            lc_fake.loc[properValues, "fluxDetrended"]
         )
-    ) * numpy.ones_like(lc_fake["fluxDetrended"])
 
     return lc_fake, fake_flares
 
@@ -2115,7 +2210,8 @@ def sampleFlareRecovery(
     maximumGap,
     minimumObservationPeriod,
     fakefreq=0.0005,
-    maxFlaresPerGap=2
+    maxFlaresPerGap=2,
+    # sym=False
 ) -> Tuple[pandas.DataFrame, pandas.DataFrame]:
     """
     Runs a number of injection recovery cycles and characterizes the light
@@ -2166,9 +2262,7 @@ def sampleFlareRecovery(
             fakefreq=fakefreq,
             maxFlaresPerGap=maxFlaresPerGap
         )
-        # fake_lc.to_pickle(f"./{itera}_fakeflares.pkl")
-        # injs.to_pickle(f"./{itera}_injs.pkl")
-        # injs.ed_rec = injs.ed_rec.fillna(0)
+
         print("injs", len(injs))
         # fig,ax=plt.subplots(figsize=(15,4))
         # ax.plot(lc["time"],lc["fluxDetrended"])
@@ -2205,7 +2299,9 @@ def sampleFlareRecovery(
             0,
             maximumGap,
             minimumObservationPeriod,
-            "photo")
+            "photo",
+            # sym
+            )
         print("recs", len(recs))
         # recs.to_pickle(f"./{itera}_recs.pkl")
         # merge injected and recovered flares
@@ -2789,9 +2885,9 @@ def characterizeFlares(
     amplinj = "amplitude",
     durinj = "duration_d"
 
-    # for index, row in fake_flares.iterrows():
-    #     if pandas.isnull(row["ed_rec"]):
-    #         fake_flares.at[index, "ed_rec"] = 0.0
+    for index, row in fake_flares.iterrows():
+        if pandas.isnull(row["ed_rec"]) and pandas.notnull(row["ed_inj"]) :
+            fake_flares.at[index, "ed_rec"] = 0.0
     # define observed flare duration
 
 
@@ -2809,12 +2905,13 @@ def characterizeFlares(
     # for ind, row in fake_flares.iterrows():
     #     if pandas.isnull(row["ed_rec"]):
     #         fake_flares.at[ind, "ed_rec"] = 0.0
+    # ampl_bins, dur_bins  = setupBins(fake_flares, flares, ampl_bins=None, dur_bins=None, flares_per_bin=200)
     if len(ampl) <3:
-        ampl_bins = numpy.arange(ampl[0], ampl[1], (ampl[1] - ampl[0]) / 15.0)
+        ampl_bins = numpy.arange(ampl[0], ampl[1], (ampl[1] - ampl[0]) / 20.0)
     else:
         ampl_bins = ampl
     if len(dur) <3:
-        dur_bins = numpy.arange(dur[0], dur[1], (dur[1] - dur[0]) / 15.0)
+        dur_bins = numpy.arange(dur[0], dur[1], (dur[1] - dur[0]) / 20.0)
     else:
         dur_bins = dur
     print("dur_bins", len(dur_bins), dur_bins)
@@ -3300,7 +3397,7 @@ def sampleFromInterval(interval, n_samples=1, seed=None, mode="uniform"):
         seed (int or None): Random seed for reproducibility.
 
     Returns:
-        np.ndarray: Array of sampled values.
+        numpy.ndarray: Array of sampled values.
     """
     if mode == "uniform":
         rng = numpy.random.default_rng(seed)
