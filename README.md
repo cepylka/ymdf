@@ -15,12 +15,12 @@ YMDF stands for **Y**oung **M** **D**warf **F**lare. It consists of two modules:
 - [Tests](#tests)
 
 <!-- /MarkdownTOC -->
+
 ## Credits
 
-The module 'flarefinder' is based on [AltaiPony](https://github.com/ekaterinailin/AltaiPony) by [Ekaterina Ilin](https://ekaterinailin.github.io/). This module can work with white light curves in Kepler and TESS, and potentially new surveys as Plato, along with light curves produced by integrating the time-resolved spectra from the surveys working in other wavelength ranges, such as FUV COS-HST. Please, credit this module as Mamonova et al, 2025[a]_ (DOI (pending): 10.1051/0004-6361/202554614) and Ilin et al. (2021) [b]_ .
+The module 'flarefinder' is based on [AltaiPony](https://github.com/ekaterinailin/AltaiPony) by [Ekaterina Ilin](https://ekaterinailin.github.io/). This module can work with white light curves in Kepler and TESS, and potentially new surveys as Plato, along with light curves produced by integrating the time-resolved spectra from the surveys working in other wavelength ranges, such as FUV COS-HST. Please, credit this module as Mamonova et al, 2025 ([1](#ref1)) (DOI (pending): 10.1051/0004-6361/202554614) and Ilin et al. (2021) [b]_ .
 
 The module 'model' is an original work. Please, credit the module 'model' as Mamonova et al. 2026, in prep. [c]_
-
 
 ## Description
 
@@ -76,7 +76,9 @@ $ python -m pytest ./src/phab/tests/model.py
 $ python -m pytest ./src/phab/tests/some.py -k "test_some_thing"
 ```
 
-.. [a] Mamonova E., Shan Y., Kowalski A.~F., Werner S.~W.~S.~C., 2025, "Flare frequency in M dwarfs belonging to young moving groups", arXiv, arXiv:2506.04465. https://doi.org:10.48550/arXiv.2506.04465
+## References
+
+<span id="ref1">1.</span> Mamonova E., Shan Y., Kowalski A.~F., Werner S.~W.~S.~C., 2025, "Flare frequency in M dwarfs belonging to young moving groups", arXiv, arXiv:2506.04465. https://doi.org:10.48550/arXiv.2506.04465
 
 .. [b] Ekaterina Ilin, Sarah J. Schmidt, Katja Poppenhäger, James R. A. Davenport, Martti H. Kristiansen, Mark Omohundro (2021). "Flares in Open Clusters with K2. II. Pleiades, Hyades, Praesepe, Ruprecht 147, and M67" Astronomy & Astrophysics, Volume 645, id.A42, 25 pp. https://doi.org/10.1051/0004-6361/202039198
 
