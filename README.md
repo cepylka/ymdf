@@ -13,6 +13,7 @@ YMDF stands for **Y**oung **M** **D**warf **F**lare. It consists of two modules:
     - [From sources](#from-sources)
         - [Building a wheel](#building-a-wheel)
 - [Tests](#tests)
+- [References](#references)
 
 <!-- /MarkdownTOC -->
 
@@ -31,7 +32,6 @@ De-trends light curves and searches for flare events. Injects synthetic flares a
 ### Model
 
 Produces a time-resolved spectrum of flare activity in a Young M Dwarf. Most suitable for studying exoplanet atmospheres orbiting such stars. The reference star is the M dwarf AU Microscopii (M0.5-1, 24 Myr old, M_\star = 0.5M_\odot). The spectral part is based on RHD models of the M dwarf stellar atmospheres during the flare event (Kowalski et al., 2022 [d]_ , 2024 [e]_ , 2025 [f]_ ). The flare frequency distributions (FFDs) used in the model are based on results in Mamonova et al.[a]_ (2025, A&A, DOI: 10.1051/0004-6361/202554614), and the module offers both single and broken power law relations in FFDs.
-
 
 ## Installing
 
@@ -78,7 +78,7 @@ $ python -m pytest ./src/phab/tests/some.py -k "test_some_thing"
 
 ## References
 
-<span id="ref1">1.</span> Mamonova E., Shan Y., Kowalski A.~F., Werner S.~W.~S.~C., 2025, "Flare frequency in M dwarfs belonging to young moving groups", arXiv, arXiv:2506.04465. https://doi.org:10.48550/arXiv.2506.04465
+1. <span id="ref1"></span> Mamonova E., Shan Y., Kowalski A.~F., Werner S.~W.~S.~C., 2025, "Flare frequency in M dwarfs belonging to young moving groups", arXiv, arXiv:2506.04465. https://doi.org:10.48550/arXiv.2506.04465
 
 .. [b] Ekaterina Ilin, Sarah J. Schmidt, Katja Poppenhäger, James R. A. Davenport, Martti H. Kristiansen, Mark Omohundro (2021). "Flares in Open Clusters with K2. II. Pleiades, Hyades, Praesepe, Ruprecht 147, and M67" Astronomy & Astrophysics, Volume 645, id.A42, 25 pp. https://doi.org/10.1051/0004-6361/202039198
 
