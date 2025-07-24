@@ -2,6 +2,8 @@ import numpy
 import pandas
 from scipy import special
 from astropy import units, constants
+from scipy import stats
+
 fluxline = None
 baseline=None
 response_curve = {"TESS" : "TESS.txt",
@@ -159,9 +161,9 @@ def flareModelDavenport(t,tpeak,fwhm, ampl):
         ) * numpy.abs(ampl)
     return flare
 
-def flareEqnFenstein(t, tpeak, fwhm, ampl, rises="Gaussian"):
+def flareEqnFenstein(t, tpeak, fwhm, ampl, rises="Student"):
 
-    def studentTRise(t, tpeak, fwhm, ampl, df=2.1):
+    def studentTRise(t, tpeak, fwhm, ampl, df=2.05):
     # Convert FWHM to scale parameter for t-distribution
         scale = fwhm / (2 * numpy.sqrt(2 * (df/(df-2)) * (2**(2/df) - 1)))
 
@@ -184,7 +186,7 @@ def flareEqnFenstein(t, tpeak, fwhm, ampl, rises="Gaussian"):
 
         return flux1[rise]
 
-    def exponentialDecay(t, tpeak, ampl, decay_rate=0.009):
+    def exponentialDecay(t, tpeak, ampl, decay_rate=0.09):
         # Initialize flux array
         flux2 = numpy.zeros_like(t)
 
@@ -199,7 +201,7 @@ def flareEqnFenstein(t, tpeak, fwhm, ampl, rises="Gaussian"):
         growth_model = studentTRise(t, tpeak, fwhm, ampl)
     elif rises=="Gaussian":
         growth_model = gaussianRise(t, tpeak, fwhm, ampl)
-    decay_model  = exponentialDecay(t, tpeak, ampl, decay_rate=0.005)
+    decay_model  = exponentialDecay(t, tpeak, ampl, decay_rate=0.09)
 
     flare = numpy.append(growth_model, decay_model)
     return flare
@@ -269,34 +271,97 @@ def fit_to_flare(time, a, c, tpeak,fwhm, out2_integ, out1_integ, flux_a_integ, f
 
     return flare*convolition/baseline + baseline
 
-def calculateEDfromTESS(time, a, c, tpeak,fwhm, modelAtmo, baseline=None):
+def calculateEDfrommodelLoyd(time, a, c, tpeak,fwhm, modelLoyd, model="Mendosa", baseline=None):
+    fin_convolition = (modelAtmo["out1"].values- modelAtmo["flux_zero_model"].values) * a + (modelAtmo["out2"].values- modelAtmo["flux_zero_model"].values) * c
+    fin_convolition_zero = modelAtmo["flux_zero_model"]
+    flux_a_integ = numpy.trapz(fin_convolition_zero, modelAtmo.index)
+    flux_f_integ = numpy.trapz(fin_convolition, modelAtmo.index)
+    ampl = 1.
+
+    if model=="Mendosa":
+        flare = flareModelMendosa(time, tpeak,fwhm, ampl)
+    elif model=="Davenport":
+        flare = flareModelDavenport(time, tpeak,fwhm, ampl)
+    elif model=="Feinsten":
+        flare = flareModelFeinstenModified(time, tpeak,fwhm, ampl)
+    ED = numpy.trapz((flare*flux_f_integ + flux_a_integ)/flux_a_integ - 1., time)
+    return ED
+
+def calculateEDfromTESS(time, a, c, tpeak,fwhm, modelAtmo, model=None, ampl_coeff=1., baseline=None):
+    if model == None:
+        model = "Mendosa"
+    fin_convolition = (modelAtmo["out1"].values- modelAtmo["flux_zero_model"].values) * a + (modelAtmo["out2"].values- modelAtmo["flux_zero_model"].values) * c
+    fin_convolition_zero = modelAtmo["flux_zero_model"]
+    flux_a_integ = numpy.trapz(fin_convolition_zero, modelAtmo.index)
+    flux_f_integ = numpy.trapz(fin_convolition, modelAtmo.index)
+    ampl = 1. * ampl_coeff
+
+    if model=="Mendosa":
+        # ampl = 1.7
+        flare = flareModelMendosa(time, tpeak,fwhm, ampl)
+        # print("Mendosa", flare)
+    elif model=="Davenport":
+        flare = flareModelDavenport(time, tpeak,fwhm, ampl)
+        # print("Davenport", flare)
+    elif model=="Feinsten":
+        flare = flareModelFeinstenModified(time, tpeak,fwhm, ampl)
+        # print("Feinsten", flare)
+
+    ED = numpy.trapz((flare*flux_f_integ + flux_a_integ)/flux_a_integ - 1., time)
+    return ED
+    # models1 = modelAtmo[modelAtmo.index <= 10000.]
+    # models1 = models1[models1.index >= 6000.]
+    # out2_integ = calculate_flare_flux_at_mission(models1.index,models1["out2"], mission="TESS")
+    # out1_integ= calculate_flare_flux_at_mission(models1.index,models1["out1"], mission="TESS")
+    # flux_a_integ = calculate_flare_flux_at_mission(models1.index,models1["flux_zero_model"], mission="TESS")
+    # fluxline = flux_a_integ
+    # final_flux = fit_to_flare(time, a, c, tpeak,fwhm, out2_integ, out1_integ, flux_a_integ, fluxline)
+    # # ed_model = numpy.trapz((final_flux/fluxline - 1.),time)
+    # residual = final_flux/fluxline - 1.
+    # # ed_model = numpy.trapz((final_flux/fluxline - 1.),time)
+    # ed_model =numpy.sum(numpy.diff(time) * residual[:-1])
+    # return ed_model
+
+def calculateEDFUVtoTESS(time, a, c, tpeak,fwhm, modelAtmo, model=None, ampl_coeff=1., baseline=None):
+    # models1 = modelAtmo[modelAtmo.index <= 1340.]
+    # models1 = models1[models1.index >= 1060.]
     models1 = modelAtmo[modelAtmo.index <= 10000.]
     models1 = models1[models1.index >= 6000.]
+    # out2_integ = numpy.trapz(models1["out2"],models1["wave"])
+    # out1_integ = numpy.trapz(models1["out1"],models1["wave"])
+    # flux_a_integ = numpy.trapz(models1["flux_zero_model"],models1["wave"])
+    # fluxline = flux_a_integ
+    # final_flux = fit_to_flare(time, a, c, tpeak,fwhm, out2_integ, out1_integ, flux_a_integ, fluxline)
+    # residual = final_flux/fluxline - 1.
+    # # ed_model = numpy.trapz((final_flux/fluxline - 1.),time)
+    # ed_model =numpy.sum(numpy.diff(time) * residual[:-1])
+    # return ed_model
     out2_integ = calculate_flare_flux_at_mission(models1.index,models1["out2"], mission="TESS")
     out1_integ= calculate_flare_flux_at_mission(models1.index,models1["out1"], mission="TESS")
     flux_a_integ = calculate_flare_flux_at_mission(models1.index,models1["flux_zero_model"], mission="TESS")
-    fluxline = flux_a_integ
-    final_flux = fit_to_flare(time, a, c, tpeak,fwhm, out2_integ, out1_integ, flux_a_integ, fluxline)
-    # ed_model = numpy.trapz((final_flux/fluxline - 1.),time)
-    residual = final_flux/fluxline - 1.
-    # ed_model = numpy.trapz((final_flux/fluxline - 1.),time)
-    ed_model =numpy.sum(numpy.diff(time) * residual[:-1])
-    return ed_model
+    if model == None:
+        model = "Mendosa"
+    fin_convolition = (models1["out1"].values- models1["flux_zero_model"].values) * a + (models1["out2"].values- models1["flux_zero_model"].values) * c
+    fin_convolition_zero = models1["flux_zero_model"]
+    flux_a_integ = numpy.trapz(fin_convolition_zero, models1.index)
+    flux_f_integ = numpy.trapz(fin_convolition, models1.index)
+    ampl = 1. * ampl_coeff
 
-def calculateEDfromFUV(time, a, c, tpeak,fwhm, modelAtmo, baseline=None):
-    models1 = modelAtmo[modelAtmo.index <= 1340.]
-    models1 = models1[models1.index >= 1060.]
-    out2_integ = numpy.trapz(models1["out2"],models1["wave"])
-    out1_integ = numpy.trapz(models1["out1"],models1["wave"])
-    flux_a_integ = numpy.trapz(models1["flux_zero_model"],models1["wave"])
-    fluxline = flux_a_integ
-    final_flux = fit_to_flare(time, a, c, tpeak,fwhm, out2_integ, out1_integ, flux_a_integ, fluxline)
-    residual = final_flux/fluxline - 1.
-    # ed_model = numpy.trapz((final_flux/fluxline - 1.),time)
-    ed_model =numpy.sum(numpy.diff(time) * residual[:-1])
-    return ed_model
+    if model=="Mendosa":
+        # ampl = 1.7
+        flare = flareModelMendosa(time, tpeak,fwhm, ampl)
+        # print("Mendosa", flare)
+    elif model=="Davenport":
+        flare = flareModelDavenport(time, tpeak,fwhm, ampl)
+        # print("Davenport", flare)
+    elif model=="Feinsten":
+        flare = flareModelFeinstenModified(time, tpeak,fwhm, ampl)
+        # print("Feinsten", flare)
 
-def model_M(ED, tstart, interval=20, model="Mendosa", seed=None, duration=None, tpeak_i=None):
+    ED = numpy.trapz((flare*flux_f_integ + flux_a_integ)/flux_a_integ - 1., time)
+    return ED
+
+def model_M(ED, tstart, interval=20, time=None, model=None, seed=None, duration=None, tpeak_i=None):
     print("model_M seed", seed)
     if seed is not None:
         numpy.random.seed(seed)
@@ -312,16 +377,35 @@ def model_M(ED, tstart, interval=20, model="Mendosa", seed=None, duration=None, 
             if numpy.random.rand() < 0.5:  # Controlled chance for small or large durations
                 # Randomly pick a small value (e.g., between 10 and 600 seconds)
                 duration = numpy.random.uniform(10, 600) # to account for Zhang, L., et al.: A&A, 689, A103 (2024) 2-branch effect in Duration/Energy relation
-    time = numpy.arange(tstart, tstart + duration + interval, step=interval)
-    print("time", time)
+    if time is None:
+        time = numpy.arange(tstart, tstart + duration + interval, step=interval)
+        print("time is none")#, time)
+    else:
+        time = time
+        print("time is not none")#, time)
+    if tpeak_i == len(time): # safety net for gap boundaries
+        tpeak_i= tpeak_i - 1
+    elif tpeak_i == 0 :
+        tpeak_i= tpeak_i + 1
     if tpeak_i is None:
-        h=numpy.random.randint(1, int(len(time)/2), size=1)
+        # h=numpy.random.randint(1, int(len(time)/2), size=1)
+        # tpeak = time[h]
+        upper = int(len(time) / 2)
+        if upper > 1:
+            h = numpy.random.randint(1, upper, size=1)
+        else:
+            # Handle the case where the time array is too short
+            # For example:
+            h = 1
         tpeak = time[h]
     else:
         tpeak = time[tpeak_i]
+
     fwhm=(time[-1]-time[0])/2.0
     print("fwhm", fwhm)
 
+    if model == None:
+        model = "Mendosa"
     # ampl = ED / (1.827 * fwhm) # /24./60./60.
     # print("ampl", ampl)
     if model=="Mendosa":
@@ -333,27 +417,33 @@ def model_M(ED, tstart, interval=20, model="Mendosa", seed=None, duration=None, 
     elif model=="Feinsten":
         ampl=1.0
         flareModel = flareModelFeinstenModified(time, tpeak,fwhm, ampl)
+    # print("flareModel",flareModel)
     flare = pandas.DataFrame(flareModel,columns=["flux"], index=time)
     return flare
 
 
 
-def calculateCoefficients(ED, tstart, interval, c, F_quiescent, F1, F2, model="Mendosa", seed=None, duration = None, tpeak_i=None):
+def calculateCoefficients(ED, tstart, interval, c, F_quiescent, F1, F2, time=None, model=None, seed=None, duration = None, tpeak_i=None):
     # factor = c * (F1 - F_quiescent) + F2 # - F_quiescent+F_quiescent - simplification of the formula
+    print("c",c, "F1",F1,"F_quiescent",F_quiescent,"F2",F2,)
     factor =  (c * (F1 - F_quiescent) + (F2 - F_quiescent)) / F_quiescent
-    flareModel = model_M(ED, tstart, interval, model="Mendosa", seed=seed, duration = duration,  tpeak_i=tpeak_i)
+
+    if model == None:
+        model = "Mendosa"
+    flareModel = model_M(ED, tstart, interval, time=time, model=model, seed=seed, duration = duration,  tpeak_i=tpeak_i)
+    # print("flareModel with coeff", flareModel)
     # integrand = ((factor * flareModel["flux"]) / F_quiescent -1.)
     # C = numpy.trapz(integrand, flareModel.index)
     S = numpy.trapz(flareModel["flux"], flareModel.index.values)  # Trapezoidal integration
-
+    print("S", S)
     coeff = ED / (factor * S)
-
+    print("ED", ED, "factor", factor,"coeff", coeff)
     # Solve for the coefficient for Model I = coeff * c * F1(t), then the coefficient for Model II will be coeff * F2(t)
     # coeff = ED / C
 
     return coeff, flareModel
 
-def variableSpectraOneFlare(c, ED, tstart, modelAtmo, interval=20, model="Mendosa", seed=None, duration = None, tpeak_i=None):
+def variableSpectraOneFlare(c, ED, tstart, modelAtmo, time=None, waverange=[None, None], interval=20, model=None, seed=None, duration = None, tpeak_i=None):
 
     """
     c is ratio of the coefficients for F1 and F2 models
@@ -362,15 +452,33 @@ def variableSpectraOneFlare(c, ED, tstart, modelAtmo, interval=20, model="Mendos
 
 
     """
-    print("variableSpectraOneFlare seed", seed)
-    F1 = numpy.trapz(modelAtmo["out1"],modelAtmo["wave"])
-    F2 = numpy.trapz(modelAtmo["out2"],modelAtmo["wave"])
-    F_quiescent = numpy.trapz(modelAtmo["flux_zero_model"],modelAtmo["wave"])
-
-    coeff, flareModel = calculateCoefficients(ED, tstart, interval, c, F_quiescent, F1, F2, model="Mendosa", seed=seed, duration=duration, tpeak_i=tpeak_i)
-    print("first coeff",coeff*c, "second coeff",coeff, )
+    if waverange == [None, None]:
+        F1 = numpy.trapz(modelAtmo["out1"],modelAtmo["wave"])
+        F2 = numpy.trapz(modelAtmo["out2"],modelAtmo["wave"])
+        F_quiescent = numpy.trapz(modelAtmo["flux_zero_model"],modelAtmo["wave"])
+    elif waverange == [600., 1000.]:
+        print("wave:", waverange[0], waverange[1], modelAtmo.index.min(), modelAtmo.index.max())
+        modelst = modelAtmo[modelAtmo.index <= waverange[1]]
+        modelst = modelst[modelst.index >= waverange[0]]
+        print("variableSpectraOneFlare seed", seed)
+        F1 = calculate_flare_flux_at_mission(modelst.index, modelst["out1"], mission="TESS")
+        F2 = calculate_flare_flux_at_mission(modelst.index, modelst["out2"], mission="TESS")
+        F_quiescent = calculate_flare_flux_at_mission(modelst.index, modelst["flux_zero_model"], mission="TESS")
+    else:
+        print("wave:", waverange[0], waverange[1], modelAtmo.index.max(), modelAtmo.index.max())
+        modelst = modelAtmo[modelAtmo.index <= waverange[1]]
+        modelst = modelst[modelst.index >= waverange[0]]
+        print("variableSpectraOneFlare seed", seed)
+        F1 = numpy.trapz(modelst["out1"],modelst["wave"])
+        F2 = numpy.trapz(modelst["out2"],modelst["wave"])
+        F_quiescent = numpy.trapz(modelst["flux_zero_model"],modelst["wave"])
+    if model == None:
+        model = "Mendosa"
+    print("inside the flux prod", F_quiescent, F1, F2)
+    coeff, flareModel = calculateCoefficients(ED, tstart, interval, c, F_quiescent, F1, F2, time=time, model=model, seed=seed, duration=duration, tpeak_i=tpeak_i)
+    print("first coeff",coeff*c, "second coeff",coeff)#, "flareModel",flareModel)
     time = flareModel.index
-    fin_convolition = (modelAtmo["out1"].values- modelAtmo["flux_zero_model"].values) * coeff *c + (modelAtmo["out2"].values - modelAtmo["flux_zero_model"].values) * coeff + modelAtmo["flux_zero_model"]
+    fin_convolition = (modelAtmo["out1"].values- modelAtmo["flux_zero_model"].values) * coeff *c + (modelAtmo["out2"].values - modelAtmo["flux_zero_model"].values) * coeff# + modelAtmo["flux_zero_model"]
     oneFlare = pandas.DataFrame(columns=modelAtmo.index, index=time)
     for ix, r in flareModel.iterrows():
         oneFlare.loc[ix] = fin_convolition*flareModel.at[ix, "flux"] + modelAtmo["flux_zero_model"].values
@@ -547,6 +655,8 @@ def sampleBrokenPowerLaw(x0, x1, x2, a1, a2, n_samples, seed=None):
     # create an array of random values between (0,1) in size of n_samples
     u = numpy.random.uniform(0,1, n_samples)
 
+    a1=-a1
+    a2=-a2
     # compute the weights with our integral function
     w1, w2, _ = integratePowerLaw(x0, x1, x2, a1, a2)
 
@@ -571,7 +681,7 @@ def sampleBrokenPowerLaw(x0, x1, x2, a1, a2, n_samples, seed=None):
         + numpy.power(x1, a2 + 1.0),
         1.0 / (1 + a2),
     )
-
+    # print(out)
     return out
 
 def brokenPowerLaw(x,x0, x1, x2, a1, a2):
@@ -607,10 +717,10 @@ def brokenPowerLaw(x,x0, x1, x2, a1, a2):
     return out* norm
 
 
-def generateSimulatedData(Tprime, interval, beta_prior,
+def generateSimulatedData(flaresperday, Tprime, interval, beta_prior,
                        alpha1_prior, alpha2_prior=None, xbreak=None,  seed=None,
-                       EDmin=1., EDmax=1e7,
-                       T0=0.0, law="piecewise"):
+                       EDmin=None, EDmax=None,
+                       T0=None, law="piecewise"):
     """Generate a fake flare distribution from given law with coefficients:
     : broken (alpha1, alpha2, beta) or single (alpha1, alpha2=None, beta)
     alpha and beta. Also produces the list of flaring times
@@ -647,32 +757,37 @@ def generateSimulatedData(Tprime, interval, beta_prior,
     pandas DataFrane : tstart of flares with corresponding ED
     """
     # Flares per time given prior on alpha1 and beta
-    flaresperday = (beta_prior *
-                         numpy.power(Emin, alpha1_prior - 1.) /
-                         (alpha1_prior - 1.))
+    flaresperday = flaresperday#(beta_prior *
+                         # numpy.power(EDmin, alpha1_prior - 1.) /
+                         # (alpha1_prior - 1.))
     # observing time stamps
     obstimes = numpy.arange(T0, T0 + Tprime + interval, interval)
-    num_intervals = int(obs_time // interval)
+    num_intervals = len(obstimes) #// interval
+    # print("num_intervals", num_intervals)
     # observing time stamps with flares from Poisson distribution
     flare_rate_per_interval = flaresperday / (24 * 60 * 60 / interval)
     poisson_values = numpy.random.poisson(lam=flare_rate_per_interval, size=num_intervals)
     flare_indices = numpy.where(poisson_values > 0)[0]
     tstarts = obstimes[flare_indices]
-
-     # number of events
-
+    # print("tstarts",tstarts)
+    #  # number of events
+    # print("flaresperday:", flaresperday)
+    # print("interval (s):", interval)
+    # print("flare_rate_per_interval:", flare_rate_per_interval)
+    # print("num_intervals:", num_intervals)
+    # print("poisson_values:", poisson_values)
     if len(tstarts) == len(obstimes):
         raise ValueError("Every time stamp is a flare.")
 
     # Energy related stuff:
-
+    # u = numpy.random.uniform(0,1, len(tstarts))
     # Finally, Generate power law distributed data:
     if law=="piecewise":
-        events = sampleBrokenPowerLaw(EDmin, xbreak, EDmax, alpha1_prior, alpha2_prior, size=len(tstarts), seed=seed)
+        events = sampleBrokenPowerLaw(EDmin, xbreak, EDmax, alpha1_prior, alpha2_prior, len(tstarts), seed=seed)
     elif law=="single":
-        events = sampleSinglePowerLaw(EDmin, EDmax, alpha1_prior, size=len(tstarts), seed=seed)
+        events = sampleSinglePowerLaw(EDmin, EDmax, alpha1_prior, len(tstarts), seed=seed)
 
-
+    # print("events",events)
     flaring_events = pandas.DataFrame(
                 {"tstart":tstarts,
                 "ED":events,
