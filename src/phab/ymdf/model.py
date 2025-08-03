@@ -128,13 +128,59 @@ def flareEqn(t, tpeak, fwhm, ampl):
 
     return eqn * ampl
 
-def flareModelMendosa(t,tpeak,fwhm, ampl):
+def flareModelMendoza(t,tpeak,fwhm, ampl):
+    """
+    The Continuous Flare Model evaluated for single-peak (classical) flare
+    events. Use this function for fitting classical flares
+    with most curve_fit tools.
+
+    References:
+
+    - Tovar Mendoza et al. (2022) DOI 10.3847/1538-3881/ac6fe6
+    - Davenport et al. (2014) http://arxiv.org/abs/1411.3723
+    - Jackman et al. (2018) https://arxiv.org/abs/1804.03377
+
+    Parameters:
+
+    - `t`: the time array to evaluate the flare over;
+    - `tpeak`: the center time of the flare peak;
+    - `fwhm`: the Full Width at Half Maximum, timescale of the flare;
+    - `ampl`: The amplitude of the flare.
+
+    Returns:
+
+    - `flare`: the flux of the flare model evaluated at each time. A continuous
+    flare template whose shape is defined by the convolution of a Gaussian
+    and double exponential and can be parameterized by three parameters:
+    center time (tpeak), FWHM, and ampitude.
+    """
     t_new = (t - tpeak) / fwhm
 
     flare = flareEqn(t_new, tpeak, fwhm, ampl)
     return flare
 
 def flareModelDavenport(t,tpeak,fwhm, ampl):
+    """
+    The Analytic Flare Model evaluated for a single-peak (classical).
+    Reference: Davenport et al. (2014) http://arxiv.org/abs/1411.3723
+
+    Use this function for fitting classical flares with most curve_fit
+    tools.
+
+    Note, this model assumes the flux before the flare is zero centered.
+
+    Parameters:
+
+    - `t`: the time array to evaluate the flare over;
+    - `tpeak`: the time of the flare peak;
+    - `dur`: the duration of the flare;
+    - `ampl`: the amplitude of the flare;
+
+    Returns:
+
+    - `flare`: the flux of the flare model evaluated at each time.
+    """
+
     _fr = [1.00000, 1.94053, -0.175084, -2.24588, -1.12498]
     _fd = [0.689008, -1.60053, 0.302963, -0.278318]
     flare = numpy.piecewise(
@@ -162,6 +208,26 @@ def flareModelDavenport(t,tpeak,fwhm, ampl):
     return flare
 
 def flareEqnFenstein(t, tpeak, fwhm, ampl, rises="Student"):
+    """
+    The simplified Gaussian rise–exponential decay temporal flare model (Feinstein et al. 2022).
+    The modifications: you can choose the Student’s t-distribution with a non-integer fractional
+    degrees of freedom. This modification accounts for sharper peaking and better captures the
+    observed flare rise morphology. In the exponential decay, we suggest alpha = −0.09,
+    which corresponds to a slower decay.
+
+    Use this function for fitting FUV flares.
+
+    Parameters:
+
+    - `t`: the time array to evaluate the flare over;
+    - `tpeak`: the time of the flare peak;
+    - `dur`: the duration of the flare;
+    - `ampl`: the amplitude of the flare;
+
+    Returns:
+
+    - `flare`: the flux of the flare model evaluated at each time.
+    """
 
     def studentTRise(t, tpeak, fwhm, ampl, df=2.05):
     # Convert FWHM to scale parameter for t-distribution
@@ -236,7 +302,7 @@ def flareModelFeinstenModified(t,tpeak,fwhm, ampl):
     flare = flareEqnFenstein(t, tpeak, fwhm, ampl)
     return flare
 
-def fit_to_flare(time, a, c, tpeak,fwhm, out2_integ, out1_integ, flux_a_integ, fluxline, baseline=None, model="Mendosa"):
+def fit_to_flare(time, a, c, tpeak,fwhm, out2_integ, out1_integ, flux_a_integ, fluxline, baseline=None, model="Mendoza"):
 
     if (baseline is None
         and
@@ -262,8 +328,8 @@ def fit_to_flare(time, a, c, tpeak,fwhm, out2_integ, out1_integ, flux_a_integ, f
     # # print("t",t, tpeak,fwhm, convolition)
     # ampl = convolition/baseline - 1.
     #
-    if model=="Mendosa":
-        flare = flareModelMendosa(time, tpeak,fwhm, ampl)
+    if model=="Mendoza":
+        flare = flareModelMendoza(time, tpeak,fwhm, ampl)
     elif model=="Davenport":
         flare = flareModelDavenport(time, tpeak,fwhm, ampl)
     elif model=="Feinsten":
@@ -271,15 +337,15 @@ def fit_to_flare(time, a, c, tpeak,fwhm, out2_integ, out1_integ, flux_a_integ, f
 
     return flare*convolition/baseline + baseline
 
-def calculateEDfrommodelLoyd(time, a, c, tpeak,fwhm, modelLoyd, model="Mendosa", baseline=None):
+def calculateEDfrommodelLoyd(time, a, c, tpeak,fwhm, modelLoyd, model="Mendoza", baseline=None):
     fin_convolition = (modelAtmo["out1"].values- modelAtmo["flux_zero_model"].values) * a + (modelAtmo["out2"].values- modelAtmo["flux_zero_model"].values) * c
     fin_convolition_zero = modelAtmo["flux_zero_model"]
     flux_a_integ = numpy.trapz(fin_convolition_zero, modelAtmo.index)
     flux_f_integ = numpy.trapz(fin_convolition, modelAtmo.index)
     ampl = 1.
 
-    if model=="Mendosa":
-        flare = flareModelMendosa(time, tpeak,fwhm, ampl)
+    if model=="Mendoza":
+        flare = flareModelMendoza(time, tpeak,fwhm, ampl)
     elif model=="Davenport":
         flare = flareModelDavenport(time, tpeak,fwhm, ampl)
     elif model=="Feinsten":
@@ -289,17 +355,17 @@ def calculateEDfrommodelLoyd(time, a, c, tpeak,fwhm, modelLoyd, model="Mendosa",
 
 def calculateEDfromTESS(time, a, c, tpeak,fwhm, modelAtmo, model=None, ampl_coeff=1., baseline=None):
     if model == None:
-        model = "Mendosa"
+        model = "Mendoza"
     fin_convolition = (modelAtmo["out1"].values- modelAtmo["flux_zero_model"].values) * a + (modelAtmo["out2"].values- modelAtmo["flux_zero_model"].values) * c
     fin_convolition_zero = modelAtmo["flux_zero_model"]
     flux_a_integ = numpy.trapz(fin_convolition_zero, modelAtmo.index)
     flux_f_integ = numpy.trapz(fin_convolition, modelAtmo.index)
     ampl = 1. * ampl_coeff
 
-    if model=="Mendosa":
+    if model=="Mendoza":
         # ampl = 1.7
-        flare = flareModelMendosa(time, tpeak,fwhm, ampl)
-        # print("Mendosa", flare)
+        flare = flareModelMendoza(time, tpeak,fwhm, ampl)
+        # print("Mendoza", flare)
     elif model=="Davenport":
         flare = flareModelDavenport(time, tpeak,fwhm, ampl)
         # print("Davenport", flare)
@@ -340,17 +406,17 @@ def calculateEDFUVtoTESS(time, a, c, tpeak,fwhm, modelAtmo, model=None, ampl_coe
     out1_integ= calculate_flare_flux_at_mission(models1.index,models1["out1"], mission="TESS")
     flux_a_integ = calculate_flare_flux_at_mission(models1.index,models1["flux_zero_model"], mission="TESS")
     if model == None:
-        model = "Mendosa"
+        model = "Mendoza"
     fin_convolition = (models1["out1"].values- models1["flux_zero_model"].values) * a + (models1["out2"].values- models1["flux_zero_model"].values) * c
     fin_convolition_zero = models1["flux_zero_model"]
     flux_a_integ = numpy.trapz(fin_convolition_zero, models1.index)
     flux_f_integ = numpy.trapz(fin_convolition, models1.index)
     ampl = 1. * ampl_coeff
 
-    if model=="Mendosa":
+    if model=="Mendoza":
         # ampl = 1.7
-        flare = flareModelMendosa(time, tpeak,fwhm, ampl)
-        # print("Mendosa", flare)
+        flare = flareModelMendoza(time, tpeak,fwhm, ampl)
+        # print("Mendoza", flare)
     elif model=="Davenport":
         flare = flareModelDavenport(time, tpeak,fwhm, ampl)
         # print("Davenport", flare)
@@ -362,6 +428,35 @@ def calculateEDFUVtoTESS(time, a, c, tpeak,fwhm, modelAtmo, model=None, ampl_coe
     return ED
 
 def model_M(ED, tstart, interval=20, time=None, model=None, seed=None, duration=None, tpeak_i=None):
+    """
+    Generate a temporal flare model flux evolution based on a specified flare model.
+
+    This function simulates the time-dependent flux of a flare event using parametric models
+    such as "Mendoza", "Davenport", or "Feinsten". The flare duration is either given or
+    sampled probabilistically as a function of the equivalent duration (ED). The flare peak time
+    is selected within the temporal domain, and the flare shape is characterized by a full width at half maximum (FWHM).
+
+    Parameters:
+        ED (float): Equivalent Duration;
+
+        tstart (float): Start time of the flare event;
+
+        interval (float, optional): Time step interval for flare model evaluation. Default is 20;
+
+        time (numpy.ndarray or None, optional): Array of time points for the flare model evaluation.
+        If None, time is managed internally. Default is None;
+
+        seed (int or None, optional): Random seed for reproducibility. Default is None;
+
+        duration (float or None, optional): Total duration of the flare in seconds.
+        If None, duration is sampled based on ED. Default is None;
+
+        tpeak_i (int or None, optional): Index of the flare peak time within the time array. If None, selected randomly
+        within the first half of the time range. Default is None.
+
+    Returns:
+        pandas.DataFrame: DataFrame indexed by time with a single column "flux" representing the normalized flare flux evolution over time.
+    """
     print("model_M seed", seed)
     if seed is not None:
         numpy.random.seed(seed)
@@ -376,7 +471,7 @@ def model_M(ED, tstart, interval=20, time=None, model=None, seed=None, duration=
             # Randomly decide whether to choose another duration from an interval
             if numpy.random.rand() < 0.5:  # Controlled chance for small or large durations
                 # Randomly pick a small value (e.g., between 10 and 600 seconds)
-                duration = numpy.random.uniform(10, 600) # to account for Zhang, L., et al.: A&A, 689, A103 (2024) 2-branch effect in Duration/Energy relation
+                duration = numpy.random.uniform(10, 600) # to account for Zhang, L., et al.: A&A, 689, A103 (2024) 2-branch effect in Duration/Energy relation Fig. 5.
     if time is None:
         time = numpy.arange(tstart, tstart + duration + interval, step=interval)
         print("time is none")#, time)
@@ -405,12 +500,12 @@ def model_M(ED, tstart, interval=20, time=None, model=None, seed=None, duration=
     print("fwhm", fwhm)
 
     if model == None:
-        model = "Mendosa"
+        model = "Mendoza"
     # ampl = ED / (1.827 * fwhm) # /24./60./60.
     # print("ampl", ampl)
-    if model=="Mendosa":
+    if model=="Mendoza":
         ampl=1.0#5249
-        flareModel = flareModelMendosa(time, tpeak,fwhm, ampl)
+        flareModel = flareModelMendoza(time, tpeak,fwhm, ampl)
     elif model=="Davenport":
         ampl=1.0
         flareModel = flareModelDavenport(time, tpeak,fwhm, ampl)
@@ -424,12 +519,51 @@ def model_M(ED, tstart, interval=20, time=None, model=None, seed=None, duration=
 
 
 def calculateCoefficients(ED, tstart, interval, c, F_quiescent, F1, F2, time=None, model=None, seed=None, duration = None, tpeak_i=None):
+    """
+    Calculate the scaling coefficient for combining two stellar atmospheric models.
+
+    This function computes a normalization coefficient to scale two flare spectral components (F1 and F2 models) weighted by
+    a coefficient ratio `c`, so that their combined flux matches the equivalent duration (ED) of the flare event.
+
+    Parameters:
+        ED (float): Equivalent Duration representing the total energy input of the flare;
+
+        tstart (float): Start time of the flare observation or simulation in sec.;
+
+        interval (float): Time step interval in sec.;
+
+        c (float): Ratio of coefficients scaling the F1 to F2 flare model components;
+
+        F_quiescent (float): Quiescent flux from the stellar atmosphere models;
+
+        F1 (float): Integrated flux of the F1 model component over the spectral range;
+
+        F2 (float): Integrated flux of the F2 model component over the spectral range;
+
+        time (numpy.ndarray or None, optional): Array of time points for the flare model evaluation. If None, time is managed internally. Default is None.
+
+        model (str or None, optional): Temporal flare model to use (e.g., "Mendoza"). If None, defaults to "Mendoza";
+
+        seed (int or None, optional): Random seed for reproducibility of any stochastic elements in the model. Default is None;
+
+        duration (float or None, optional): Total duration of the flare event for the temporal model;
+
+        tpeak_i (float or None, optional): Time of flare peak within the model time base.
+
+    Returns:
+        tuple:
+            - coeff (float): Scaling coefficient to apply to the flare spectral models, ensuring the combined flux matches the flare energy.
+            - flareModel (pandas.DataFrame): DataFrame containing the temporal flare model flux evolution indexed by time.
+
+    """
+
+
     # factor = c * (F1 - F_quiescent) + F2 # - F_quiescent+F_quiescent - simplification of the formula
     print("c",c, "F1",F1,"F_quiescent",F_quiescent,"F2",F2,)
     factor =  (c * (F1 - F_quiescent) + (F2 - F_quiescent)) / F_quiescent
 
     if model == None:
-        model = "Mendosa"
+        model = "Mendoza"
     flareModel = model_M(ED, tstart, interval, time=time, model=model, seed=seed, duration = duration,  tpeak_i=tpeak_i)
     # print("flareModel with coeff", flareModel)
     # integrand = ((factor * flareModel["flux"]) / F_quiescent -1.)
@@ -446,10 +580,49 @@ def calculateCoefficients(ED, tstart, interval, c, F_quiescent, F1, F2, time=Non
 def variableSpectraOneFlare(c, ED, tstart, modelAtmo, time=None, waverange=[None, None], interval=20, model=None, seed=None, duration = None, tpeak_i=None):
 
     """
-    c is ratio of the coefficients for F1 and F2 models
-    x  - coefficient (c*x for F1 model, x for F2 model)
-    models is pandas DataFrame with columns: "out1" for F1, "out2" for F2, "flux_zero_model" for F_quiescent
+    Simulates the time-variable spectral signal of a single flare.
 
+    This function calculates a composite flare spectrum as a linear combination of two components (F1 and F2 models),
+    weighted by a coefficient ratio `c`. The flare evolution is modelled over time using provided coefficients
+    derived from input parameters and an atmospheric spectral model (`modelAtmo`) on the spectral range specified by `wave`.
+    The final output is a pandas DataFrame representing the time-dependent flare flux at each wavelength that can be added to light curve.
+
+    Parameters:
+        c (float): Ratio of coefficients between the F1 and F2 flare atmospheric models. The F1 model is scaled by `c * x`,
+            and the F2 model by `x`, where `x` is the base coefficient;
+
+        ED (float): Equivalent Duration parameter specifying the flare energy input for coefficient calculation;
+
+        tstart (float): Start time of the flare observation in sec;
+
+        modelAtmo (pandas.DataFrame): Stellar atmosphere spectral model containing columns "out1" (F1 model),
+        "out2" (F2 model),  and "flux_zero_model" (quiescent flux). Index corresponds to wavelength or spectral coordinate;
+
+        time (numpy.ndarray or None, optional): Array of time points (timestamps) representing the flare event when fitting actual flare observations.
+        For simulated data generation, this should be set to `None`.
+
+        waverange (list or tuple of two floats or None, optional):   Specifies the wavelength interval [lower_bound, upper_bound] to be used for spectral integration and flux calculations.
+        If set to [None, None] (default), the full wavelength range covered by the atmospheric model (`modelAtmo`) is used without restriction.
+        Otherwise, only wavelengths within the specified bounds are considered.
+
+        interval (int, optional): Time interval (in sec.) for flare modelling steps. Default is 20;
+
+        model (str, optional): Flare temporal model to use for coefficient calculation. Default is "Mendoza";
+
+        seed (int or None, optional): Random seed for reproducibility in coefficient calculations. Default is None;
+
+        duration (float or None, optional): Total duration of the flare event. If None, inferred from flare model. Default is None;
+
+        tpeak_i (float or None, optional): Time of flare peak within model time base. Default is None;
+
+        denom (float, optional): Normalization denominator applied to the flux. Default is 1.0.
+
+        wave (str, optional): Must be one of "photo", "uv", or "custom". Determines
+        wavelength range used in flux integration. Default is "photo".
+
+    Returns:
+        pandas.DataFrame: Time-indexed DataFrame where each row represents a time step of the flare evolution and each column corresponds
+        to a wavelength from `modelAtmo`.
 
     """
     if waverange == [None, None]:
@@ -473,7 +646,7 @@ def variableSpectraOneFlare(c, ED, tstart, modelAtmo, time=None, waverange=[None
         F2 = numpy.trapz(modelst["out2"],modelst["wave"])
         F_quiescent = numpy.trapz(modelst["flux_zero_model"],modelst["wave"])
     if model == None:
-        model = "Mendosa"
+        model = "Mendoza"
     print("inside the flux prod", F_quiescent, F1, F2)
     coeff, flareModel = calculateCoefficients(ED, tstart, interval, c, F_quiescent, F1, F2, time=time, model=model, seed=seed, duration=duration, tpeak_i=tpeak_i)
     print("first coeff",coeff*c, "second coeff",coeff)#, "flareModel",flareModel)
@@ -497,13 +670,45 @@ def variableSpectraOneFlare(c, ED, tstart, modelAtmo, time=None, waverange=[None
 
     return oneFlare
 
-def variableSpectraOneFlareObs(c, ED, tstart, modelAtmo, interval=20, model="Mendosa", seed=None, duration = None,  tpeak_i=None, denom=1., wave="photo"):
+def variableSpectraOneFlareObs(c, ED, tstart, modelAtmo, interval=20, model="Mendoza", seed=None, duration = None,  tpeak_i=None, denom=1., wave="photo"):
 
     """
-    c is ratio of the coefficients for F1 and F2 models
-    x  - coefficient (c*x for F1 model, x for F2 model)
-    models is pandas DataFrame with columns: "out1" for F1, "out2" for F2, "flux_zero_model" for F_quiescent
-    wave="photo" or "uv" or "custom"
+    Simulates the time-variable spectral signal of a single flare in the certain wavelength interval.
+
+    This function calculates a composite flare spectrum as a linear combination of two components (F1 and F2 models),
+    weighted by a coefficient ratio `c`. The flare evolution is modelled over time using provided coefficients
+    derived from input parameters and an atmospheric spectral model (`modelAtmo`) on the spectral range specified by `wave`.
+    The final output is a pandas DataFrame representing the time-dependent flare flux at each wavelength that can be added to light curve.
+
+    Parameters:
+        c (float): Ratio of coefficients between the F1 and F2 flare atmospheric models. The F1 model is scaled by `c * x`,
+            and the F2 model by `x`, where `x` is the base coefficient;
+
+        ED (float): Equivalent Duration parameter specifying the flare energy input for coefficient calculation;
+
+        tstart (float): Start time of the flare observation in sec;
+
+        modelAtmo (pandas.DataFrame): Stellar atmosphere spectral model containing columns "out1" (F1 model),
+        "out2" (F2 model),  and "flux_zero_model" (quiescent flux). Index corresponds to wavelength or spectral coordinate;
+
+        interval (int, optional): Time interval (in sec.) for flare modelling steps. Default is 20;
+
+        model (str, optional): Flare temporal model to use for coefficient calculation. Default is "Mendoza";
+
+        seed (int or None, optional): Random seed for reproducibility in coefficient calculations. Default is None;
+
+        duration (float or None, optional): Total duration of the flare event. If None, inferred from flare model. Default is None;
+
+        tpeak_i (float or None, optional): Time of flare peak within model time base. Default is None;
+
+        denom (float, optional): Normalization denominator applied to the flux. Default is 1.0.
+
+        wave (str, optional): Must be one of "photo", "uv", or "custom". Determines
+        wavelength range used in flux integration. Default is "photo".
+
+    Returns:
+        pandas.DataFrame: Time-indexed DataFrame where each row represents a time step of the flare evolution and each column corresponds
+        to a wavelength from `modelAtmo`.
 
     """
     print("variableSpectraOneFlare seed", seed)
@@ -518,7 +723,7 @@ def variableSpectraOneFlareObs(c, ED, tstart, modelAtmo, interval=20, model="Men
     F2 = numpy.trapz(modelAtmo_range["out2"],modelAtmo_range["wave"])
     F_quiescent = numpy.trapz(modelAtmo_range["flux_zero_model"],modelAtmo_range["wave"])
 
-    coeff, flareModel = calculateCoefficients(ED, tstart, interval, c, F_quiescent, F1, F2, model="Mendosa", seed=seed, duration=duration, tpeak_i=tpeak_i)
+    coeff, flareModel = calculateCoefficients(ED, tstart, interval, c, F_quiescent, F1, F2, model="Mendoza", seed=seed, duration=duration, tpeak_i=tpeak_i)
     print("first coeff",coeff*c, "second coeff",coeff, )
     time = flareModel.index
     fin_convolition = (modelAtmo["out1"].values- modelAtmo["flux_zero_model"].values) * coeff *c + (modelAtmo["out2"].values - modelAtmo["flux_zero_model"].values) * coeff #+ modelAtmo["flux_zero_model"]
@@ -588,7 +793,8 @@ def epsFromBeta(beta, alpha, deltaT, mined):
     return 1. - numpy.exp(-exponent)
 
 def sampleSinglePowerLaw(x_min, x_max, alpha_prior, size=1, seed=None):
-    """Power-law generator for pdf(x)\propto x^{g-1}
+    """
+    Power-law generator for pdf(x)\propto x^{g-1}
     for a<=x<= and single power law
     The formalism of sampling:
 
@@ -599,8 +805,18 @@ def sampleSinglePowerLaw(x_min, x_max, alpha_prior, size=1, seed=None):
     P(x) = (x / x_min) ** (-alpha + 1)
     The inverse of CDF:
     Pinv(x) = x_min * x ** (-1 / (alpha - 1))
-    We got the distribution from the inverse CDF using x = numpy.random.uniform(0, 1, n_samples)
+    The distribution is obtained from the inverse CDF using x = numpy.random.uniform(0, 1, n_samples)
 
+
+    Parameters:
+        x_min (float): Lower bound of the sampling range.
+        x_max (float): Upper bound of the sampling range.
+        alpha_prior (float): Scaling exponent alpha (> 1) of the power-law distribution.
+        size (int, optional): Number of samples to generate. Default is 1.
+        seed (int or None, optional): Seed for random number generator to ensure reproducibility.
+
+    Returns:
+        numpy.ndarray: Array of sampled values drawn from the specified power-law distribution.
     """
     g=-alpha_prior + 1.
     if seed is not None:
@@ -617,12 +833,14 @@ def integratePowerLaw(x0, x1, x2, a1, a2):
     This implementation of Broken Power Law sampling was based
     on https://github.com/grburgess/brokenpl_sample/blob/master/sample_broken_power_law.ipynb
 
-    x0: lower bound
-    x1: break point
-    x2: upper bound
-    a1: lower power law index
-    a2: upper power low index
-
+    Parameters:
+        x0: lower bound
+        x1: break point
+        x2: upper bound
+        a1: lower power law index
+        a2: upper power low index
+    Returns:
+        the weights w1, w2 of each piece of the function and the total integral
     """
 
     # compute the integral of each piece analytically
@@ -643,12 +861,15 @@ def sampleBrokenPowerLaw(x0, x1, x2, a1, a2, n_samples, seed=None):
     This implementation of Broken Power Law sampling was based
     on https://github.com/grburgess/brokenpl_sample/blob/master/sample_broken_power_law.ipynb
 
-    u: an array of uniform random numbers between on {0,1},  size: n_samples
-    x0: lower bound
-    x1: break point
-    x2: upper bound
-    a1: lower power law index
-    a2: upper power low index
+    Parameters:
+        u: an array of uniform random numbers between on {0,1},  size: n_samples
+        x0: lower bound
+        x1: break point
+        x2: upper bound
+        a1: lower power law index
+        a2: upper power low index
+    Returns:
+        numpy.ndarray: Array of sampled values drawn from the specified broken power-law distribution.
     """
     if seed is not None:
         numpy.random.seed(seed)
@@ -721,40 +942,39 @@ def generateSimulatedData(flaresperday, Tprime, interval, beta_prior,
                        alpha1_prior, alpha2_prior=None, xbreak=None,  seed=None,
                        EDmin=None, EDmax=None,
                        T0=None, law="piecewise"):
-    """Generate a fake flare distribution from given law with coefficients:
+    """
+    Generate a fake flare distribution from given law with coefficients:
     : broken (alpha1, alpha2, beta) or single (alpha1, alpha2=None, beta)
     alpha and beta. Also produces the list of flaring times
     using Tprime, interval and flare rate.
 
     Parameters:
-    -----------
-    Tprime : float
-        total observation time in sec
-    interval :
-        interval for observations (20 sec to imitate TESS fast cadence)
-    beta_prior : float
-        value for the power law intercept
-    alpha1_prior : float
-        value for the power law exponent 1
-    alpha2_prior : float
-        value for the power law exponent 2, optional
-    xbreak : float
-        equivalent duration in sec at break for broken power law
-    seed : int
-        Default None. If set, the generated events
-        will be fixed.
-    EDmin : float
-        minimum equivalent duration of events
-    EDmax : float
-        maximum equivalent duration of events
-    T0 : usually 0.0
-        start time of observations
-    law : "piecewise" or "single" for broken power law with alpha1_prior
-        and alpha2_prior and single power law with alpha1_prior, respectively
+        Tprime : float
+            total observation time in sec
+        interval :
+            interval for observations (20 sec to imitate TESS fast cadence)
+        beta_prior : float
+            value for the power law intercept
+        alpha1_prior : float
+            value for the power law exponent 1
+        alpha2_prior : float
+            value for the power law exponent 2, optional
+        xbreak : float
+            equivalent duration in sec at break for broken power law
+        seed : int
+            Default None. If set, the generated events
+            will be fixed.
+        EDmin : float
+            minimum equivalent duration of events
+        EDmax : float
+            maximum equivalent duration of events
+        T0 : usually 0.0
+            start time of observations
+        law : "piecewise" or "single" for broken power law with alpha1_prior
+            and alpha2_prior and single power law with alpha1_prior, respectively
 
     Return:
-    -------
-    pandas DataFrane : tstart of flares with corresponding ED
+        pandas DataFrane : tstart of flares with corresponding ED
     """
     # Flares per time given prior on alpha1 and beta
     flaresperday = flaresperday#(beta_prior *

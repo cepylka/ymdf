@@ -28,7 +28,8 @@ def findGaps(
     Parameters:
 
     - `maximumGap`: should be larger than step in time series
-    - `minimumObservationPeriod`:
+    - `minimumObservationPeriod`: minimum number of datapoints in continuous
+    observation, without gaps as defined by `maximumGap`;
     """
     dt = numpy.diff(lightCurve["time"].values)
 
@@ -274,6 +275,20 @@ def establishWindowLength(
     windowLengthCandidate: int,
     waveRange: Literal["uv", "photo"]
 ) -> int:
+    """
+    Determine an appropriate window length for analysis of light curve.
+
+    The routine selects a suitable window length (minimum 5), potentially adapting
+    for time resolution and wavelength domain.
+
+    Parameters:
+    - `timeSeries`: observed times (in seconds)
+    - `windowLengthCandidate`: if >0, use as suggested window length; if 0, calculate automatically
+    - `waveRange`: "uv" for UV timescale, "photo" for TESS (units: seconds);
+
+    Returns:
+    - `windowLength`: integer window size (more or equal 5)
+    """
     if waveRange not in ["uv", "photo"]:
         raise ValueError(f"Unknown wave range: {waveRange}")
 
@@ -284,7 +299,7 @@ def establishWindowLength(
     )
 
     if windowLengthCandidate == 0:
-        # from Appaloosa
+        # from Appaloosa https://github.com/jradavenport/appaloosa
         dt = numpy.nanmedian(
             timeSeries[1:].values / dayInSeconds
             -
@@ -293,9 +308,7 @@ def establishWindowLength(
         windowLengthCandidate = numpy.floor(0.1 / dt)  # 0.25 / dt
         if windowLengthCandidate % 2 == 0:
             windowLengthCandidate += 1
-        # print("windowLengthCandidate",windowLengthCandidate)
     # window length must be larger than polyorder
-    # print("window", max(windowLengthCandidate, 5))
     return max(windowLengthCandidate, 5)
 
 
@@ -886,18 +899,40 @@ def equivalentDurationModel(
 
 
 def findFlareEnergy(
-    timeSeries,
-    fluxSeries,
-    fluxErrorSeries,
+    lightCurve: pandas.DataFrame,
     foundFlares: pandas.DataFrame,
     starRadius,
     starDistance,
     maximumGap,
     minimumObservationPeriod,
     padding,
-    minimumerror,
-    waveRange: Literal["uv", "photo"]
-):
+    waveRange: Literal["uv", "photo"],
+    minimumerror = 1e-16
+) -> pandas.DataFrame:
+    """
+    Attach physical energy estimates (in erg) to each flare candidate
+    using the quiescent stellar luminosity and the flare's equivalent duration.
+
+    The function calculates:
+      - `luminosity quiescent`: Star's band-integrated luminosity in the observed band,
+      - `flare_erg`: Total flare energy estimated via the measured (recovered) equivalent duration,
+      - `flare_erg_rec`: Flare energy further corrected for injection-recovery bias (e.g., via 'tile-up' recovery correction).
+
+    Parameters:
+    - `timeSeries`: times.
+    - `fluxSeries`: fluxes.
+    - `fluxErrorSeries`: error in fluxes.
+    - `foundFlares`: DataFrame with detected flares and with `ed_rec` and `ed_corr` columns.
+    - `starRadius`: stellar radius.
+    - `starDistance`: stellar distance.
+
+    Returns:
+    - Modified data frame now including
+        * `luminosity quiescent`: baseline bandpass luminosity used for energy calculation,
+        * `flare_erg`: energy based on measured ED,
+        * `flare_erg_rec`: energy based on bias-corrected ED.
+
+    """
     # lightCurve = pandas.DataFrame(
     #     {
     #         "time": timeSeries,
@@ -940,22 +975,22 @@ def findFlareEnergy(
     #     30
     # )
     luminosity = luminosityQuiescent(
-        timeSeries,
-        fluxSeries,
-        fluxErrorSeries,
+        lightCurve,
         starDistance,
         starRadius,
         maximumGap,
         minimumObservationPeriod,
         padding,
+        waveRange,
         minimumerror,
-        waveRange
     )
-    foundFlares["luminosity quiscent"] = numpy.array(numpy.NaN, dtype=float)
+    # Initialize result columns in DataFrame for energies and quiescent luminosity.
+    foundFlares["luminosity quiescent"] = numpy.array(numpy.NaN, dtype=float)
     foundFlares["flare_erg"] = numpy.array(numpy.NaN, dtype=float)
     foundFlares["flare_erg_rec"] = numpy.array(numpy.NaN, dtype=float)
     for index, row in foundFlares.iterrows():
-        foundFlares.at[index, "luminosity quiscent"] = luminosity
+        foundFlares.at[index, "luminosity quiescent"] = luminosity
+        # For each flare, compute and assign energies.
         foundFlares.at[index, "flare_erg"] = foundFlares.at[
             index,
             "ed_rec"
@@ -968,27 +1003,39 @@ def findFlareEnergy(
 
 
 def luminosityQuiescent(
-    timeSeries,
-    fluxSeries,
-    fluxErrorSeries,
-    starDistance,
-    starRadius,
-    maximumGap,
-    minimumObservationPeriod,
-    padding,
-    minimumerror,
-    waveRange: Literal["uv", "photo"]
-):
+    lightCurve: pandas.DataFrame,
+    starDistance: float,
+    starRadius: float,
+    maximumGap: float,
+    minimumObservationPeriod: float,
+    padding: int,
+    waveRange: Literal["uv", "photo"],
+    minimumerror = 1e-16,
+)-> float:
+    """
+      1. Calculate the 'quiescent' flux in physical flux units, e.g., erg/s/cm².
+      2. Calculates projected luminosity from the distance to the star and its
+         radius, converting all quantities to cgs (centimeter–gram–second) units.
+
+    Parameters:
+    - `timeSeries`: times (sec).
+    - `fluxSeries`: flux (erg/s/cm²).
+    - `fluxErrorSeries`: per-point flux errors (for robust quiescent estimation).
+    - `starDistance`: distance to the star (in parsecs; will be converted to cm).
+    - `starRadius`: radius of the star (in solar radii; will be converted to cm).
+
+    Returns:
+    - Quiescent luminosity (`lum`) of the star in erg/s (float).
+
+    """
     integrated_flux = (
         fluxQuiescent(
-            timeSeries,
-            fluxSeries,
-            fluxErrorSeries,
+            lightCurve,
             maximumGap,
             minimumObservationPeriod,
             padding,
-            minimumerror,
-            waveRange
+            waveRange,
+            minimumerror = 1e-16
         )
         *
         (
@@ -997,7 +1044,7 @@ def luminosityQuiescent(
             (starRadius * constants.R_sun.to("cm"))
         )**2
     )
-
+    # Scale up to projected area.
     lum = (
         integrated_flux
         *
@@ -1010,22 +1057,25 @@ def luminosityQuiescent(
 
 
 def fluxQuiescent(
-    timeSeries,
-    fluxSeries,
-    fluxErrorSeries,
-    maximumGap,
-    minimumObservationPeriod,
-    padding,
-    minimumerror,
-    waveRange: Literal["uv", "photo"]
-):
-    lightCurve = pandas.DataFrame(
-        {
-            "time": timeSeries,
-            "flux": fluxSeries,
-            "fluxError": fluxErrorSeries
-        }
-    )
+    lightCurve: pandas.DataFrame,
+    maximumGap: float,
+    minimumObservationPeriod: float,
+    padding: int,
+    waveRange: Literal["uv", "photo"],
+    minimumerror = 1e-16
+)-> float:
+    """
+    Estimate the quiescent (non-flaring) stellar flux from a (possibly gappy/noisy) light curve,
+    robustly filtering out flares and other outliers.
+
+    """
+    # lightCurve = pandas.DataFrame(
+    #     {
+    #         "time": timeSeries,
+    #         "flux": fluxSeries,
+    #         "fluxError": fluxErrorSeries
+    #     }
+    # )
 
     gaps = findGaps(
         lightCurve,
@@ -1042,14 +1092,14 @@ def fluxQuiescent(
         waveRange,
         5
     )
-    # print(gaps)
+    # if error estimates are "too large" relative to observed local noise, recompute error as median rolling stddev (3pt window)
     detrendedLightCurve["fluxDetrendedError"] = detrendedLightCurve["fluxError"]
     for (le,ri) in gaps:
         medianL, sigmaL = medSig(detrendedLightCurve.loc[le:ri, "fluxDetrended"])
 
         if max(detrendedLightCurve.loc[le:ri, "fluxDetrendedError"]) > sigmaL/1.48:
             detrendedLightCurve.loc[le:ri, "fluxDetrendedError"] = max(
-                1e-16,
+                minimumerror,
                 numpy.nanmedian(
                     pandas.Series(
                         detrendedLightCurve.loc[le:ri, "fluxDetrended"]
@@ -1057,10 +1107,10 @@ def fluxQuiescent(
                 )
             ) * numpy.ones_like(lightCurve.loc[le:ri, "fluxDetrended"])
 
-
+    # reject dataset if all detrended flux is NaN—no valid baseline for flare search/energy calibration
     if detrendedLightCurve["fluxDetrended"].isna().all():
         raise ValueError("Finding flares only works on detrended light curves")
-
+    # iterative outlier rejection
     detrendedLightCurve = findIterativeMedian(detrendedLightCurve, gaps, 30)
     return numpy.nanmedian(detrendedLightCurve["iterativeMedian"])
 
@@ -1144,7 +1194,7 @@ def findFlares(
         raise ValueError("Finding flares only works on detrended light curves")
 
     detrendedLightCurve = findIterativeMedian(detrendedLightCurve, gaps, 30)#, sym)
-    print("fromfinder", detrendedLightCurve)
+    # print("fromfinder", detrendedLightCurve)
     istart = numpy.array([], dtype="int")
     istop = numpy.array([], dtype="int")
     detrendedLightCurve["fluxDetrendedError"] = detrendedLightCurve["fluxError"]
@@ -1628,7 +1678,7 @@ def findFlares(
 
 def flareEqn(t, tpeak, fwhm):
     """
-    The equation that defines the shape for the Continuous Flare Model
+    The equation that defines the shape for the Continuous Flare Model (Mendoza 2022)
     """
     A, B, C, D1, D2, f1 = [
         0.9687734504375167,
@@ -1916,25 +1966,25 @@ def generateRandomPeakTime(tstart, tstop, dtime, mintime, seed=None):
         return t0
 
 
-def split_listic(a, n):
-    k, m = divmod(len(a), n)
-    return (
-        a[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n)
-    )
+# def split_listic(a, n):
+#     k, m = divmod(len(a), n)
+#     return (
+#         a[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n)
+#     )
 
 
 def injectFakeFlares(
-    lc,
-    flares,
-    gaps,
-    ampl,
-    dur,
+    lc:pandas.DataFrame,
+    flares:pandas.DataFrame,
+    gaps: List[Tuple[int, int]],
+    ampl: List[float],
+    dur: List[float],
     model="mendoza2022",
-    fakefreq=0.0005,  # /24/60/60, # we need to allow user to choose flare freq, so elevate to characterise flares
+    fakefreq=0.0005,  # /24/60/60, # allow user to choose flare freq, so elevate to characterise flares
     maxFlaresPerGap=1,
     d=False,
     seed=None
-):
+) -> Tuple[pandas.DataFrame, pandas.DataFrame]:
     """
     Create a number of events, inject them in to data. Use grid of amplitudes
     and durations, keep ampl in relative flux units. Keep track of energy
@@ -1957,12 +2007,13 @@ def injectFakeFlares(
     Returns:
 
     - `FlareLightCurve` with fake flare signatures.
+    - fake flares data frame
     """
     # print("before", lc["fluxDetrended"])
 
     lc_fake = lc.copy()
     lc_fake["fluxDetrendedError"] = lc_fake["fluxError"]
-    print("lc_fakeItMed", lc_fake["iterativeMedian"])
+    # print("lc_fakeItMed", lc_fake["iterativeMedian"])
     lc_fake["flare_flux"] = 0.0
     lc_fake_single_column = lc_fake[['fluxDetrended']].copy()
     # print("lc_fake.columns", lc_fake.columns)
@@ -2084,7 +2135,9 @@ def injectFakeFlares(
 
         for k in range(nfake):
             check = False
-            while check is False:
+            max_attempts = 20  # max tries limit
+            attempt = 0
+            while check is False and attempt < max_attempts:
                 t0 = generateRandomPeakTime(
                     tstart,
                     tstop,
@@ -2094,7 +2147,6 @@ def injectFakeFlares(
                 )
 
                 # add the peak time to the list
-                # generate the flare flux from the Davenport 2014 model
                 start_time = t0 - dur_fake[k] - dur_fake[k]/numpy.log(2.)
                 end_time = t0 + dur_fake[k] - dur_fake[k]/numpy.log(2.)
                 start_time = numpy.clip(start_time, time[0], time[-1])
@@ -2106,6 +2158,10 @@ def injectFakeFlares(
                 # print("indices",indices)
                 if len(indices)>1:
                     check = True
+                attempt += 1
+            if not check:
+                print(f"Warning: Could not find valid indices for k={k} after {max_attempts} attempts. Skipping this k.")
+                continue  # skip to next k
             if model == "davenport2014":
                 fluxy = flareModelDavenport2014(
                     time_chunks[k],
@@ -2228,253 +2284,253 @@ def injectFakeFlares(
     return lc_fake, fake_flares
 
 
-def sampleFlareRecovery(
-    lc,
-    flares,
-    ampl,
-    dur,
-    iterations,
-    n1,
-    n2,
-    n3,
-    minSep,
-    maximumGap,
-    minimumObservationPeriod,
-    fakefreq=0.0005,
-    maxFlaresPerGap=2,
-    # sym=False
-) -> Tuple[pandas.DataFrame, pandas.DataFrame]:
-    """
-    Runs a number of injection recovery cycles and characterizes the light
-    curve by recovery probability and equivalent duration underestimation.
-    Inject one flare per light curve.
+# def sampleFlareRecovery(
+#     lc,
+#     flares,
+#     ampl,
+#     dur,
+#     iterations,
+#     n1,
+#     n2,
+#     n3,
+#     minSep,
+#     maximumGap,
+#     minimumObservationPeriod,
+#     fakefreq=0.0005,
+#     maxFlaresPerGap=2,
+#     # sym=False
+# ) -> Tuple[pandas.DataFrame, pandas.DataFrame]:
+#     """
+#     Runs a number of injection recovery cycles and characterizes the light
+#     curve by recovery probability and equivalent duration underestimation.
+#     Inject one flare per light curve.
 
-    Parameters:
+#     Parameters:
 
-    - `iterations`: number of injection/recovery cycles;
-    - `fakefreq`: number of flares per sec, but at least one per continuous
-    observation period will be injected.
+#     - `iterations`: number of injection/recovery cycles;
+#     - `fakefreq`: number of flares per sec, but at least one per continuous
+#     observation period will be injected.
 
-    Returns:
+#     Returns:
 
-    - `lc`: detrended light curve with all fake_flares listed in the attribute;
-    - `fake_lc`: light curve with the last iteration of synthetic
-    flares injected.
-    """
+#     - `lc`: detrended light curve with all fake_flares listed in the attribute;
+#     - `fake_lc`: light curve with the last iteration of synthetic
+#     flares injected.
+#     """
 
-    flc = lc.copy()
-    # print("sample recovery copy of lc", flc.tail(20))
-    fake_flares = pandas.DataFrame(columns=["istart","istop","tstart","tstop","ed_rec","ampl_rec","total_n_valid_data_points","dur","rec","duration_d","amplitude","ed_inj","peak_time"])
-    m=0
-    gaps = findGaps(
-        flc,
-        maximumGap=maximumGap,
-        # the other place where we need to allow
-        # choosing the time between gaps 7200
-        minimumObservationPeriod=minimumObservationPeriod
-    )
+#     flc = lc.copy()
+#     # print("sample recovery copy of lc", flc.tail(20))
+#     fake_flares = pandas.DataFrame(columns=["istart","istop","tstart","tstop","ed_rec","ampl_rec","total_n_valid_data_points","dur","rec","duration_d","amplitude","ed_inj","peak_time"])
+#     m=0
+#     gaps = findGaps(
+#         flc,
+#         maximumGap=maximumGap,
+#         # the other place where we need to allow
+#         # choosing the time between gaps 7200
+#         minimumObservationPeriod=minimumObservationPeriod
+#     )
 
-    widgets = [progressbar.Percentage(), progressbar.Bar()]
-    bar = progressbar.ProgressBar(
-        widgets=widgets,
-        max_value=iterations
-    ).start()
+#     widgets = [progressbar.Percentage(), progressbar.Bar()]
+#     bar = progressbar.ProgressBar(
+#         widgets=widgets,
+#         max_value=iterations
+#     ).start()
 
-    for itera in range(iterations):
-        # flc.to_pickle(f"./{itera}_reals.pkl")
-        lc_fake = flc.copy()
-        injs = pandas.DataFrame()
-        fake_lc, injs = injectFakeFlares(
-            lc_fake,
-            flares,
-            gaps,
-            ampl,
-            dur,
-            fakefreq=fakefreq,
-            maxFlaresPerGap=maxFlaresPerGap
-        )
+#     for itera in range(iterations):
+#         # flc.to_pickle(f"./{itera}_reals.pkl")
+#         lc_fake = flc.copy()
+#         injs = pandas.DataFrame()
+#         fake_lc, injs = injectFakeFlares(
+#             lc_fake,
+#             flares,
+#             gaps,
+#             ampl,
+#             dur,
+#             fakefreq=fakefreq,
+#             maxFlaresPerGap=maxFlaresPerGap
+#         )
+#         print("injs", len(injs))
+#         # fig,ax=plt.subplots(figsize=(15,4))
+#         # ax.plot(lc["time"],lc["fluxDetrended"])
+#         # ax.plot(fake_lc["time"],fake_lc["fluxDetrended"])
+#         # ax.axhline(0., color="k")
+#         # ax.set_ylim(-1e-13,1e-13)
+#         # with PdfPages(f'./UV_flux{itera}.pdf') as pdf:
+#         #     pdf.savefig(fig, bbox_inches='tight')
+#         recs = pandas.DataFrame()
+#         # recs = findFakeFlares(
+#         #     fake_lc,
+#         #     gaps,
+#         #     n1=n1,
+#         #     n2=n2,
+#         #     n3=n3,
+#         #     minSep=minSep,
+#         #     maximumGap=maximumGap,
+#         #     minimumObservationPeriod=minimumObservationPeriod
+#         # )
+#         # fake_lc.rename(columns={'"fluxDetrended"': '"fluxDetrendedOld"'}, inplace=True)
+#         # fake_lc_det = detrendSavGol(
+#         #     fake_lc,
+#         #     gaps,
+#         #     3,
+#         #     "photo",
+#         #     5
+#         #     )
+#         fluxes_fake, recs = findFlares(
+#             fake_lc,
+#             n1,
+#             n2,
+#             n3,
+#             minSep,
+#             0,
+#             maximumGap,
+#             minimumObservationPeriod,
+#             "photo",
+#             # sym
+#             )
+#         print("recs", len(recs))
+#         # recs.to_pickle(f"./{itera}_recs.pkl")
+#         # merge injected and recovered flares
+#         len_of_table = len(recs)
+#         injs["rec"] = numpy.array(numpy.NaN, dtype=float)
+#         injs["rec"] = 0.
+#         # recs["rec"] = numpy.array(numpy.NaN, dtype=float)
+#         # recs["rec"] = 0.
+#         injs['key'] = 1
+#         recs['key'] = 1
+#         merged = injs.merge(recs,how='outer').drop(columns='key')
+#         print("before cross", len(merged))
+#         # merged[]
+#         merged_recovered = merged[(merged["tstart"] < merged["peak_time"]) & (merged["tstop"]> merged["peak_time"])]
+#         merged_recovered.loc[:, 'rec'] = 1
 
-        print("injs", len(injs))
-        # fig,ax=plt.subplots(figsize=(15,4))
-        # ax.plot(lc["time"],lc["fluxDetrended"])
-        # ax.plot(fake_lc["time"],fake_lc["fluxDetrended"])
-        # ax.axhline(0., color="k")
-        # ax.set_ylim(-1e-13,1e-13)
-        # with PdfPages(f'./UV_flux{itera}.pdf') as pdf:
-        #     pdf.savefig(fig, bbox_inches='tight')
-        recs = pandas.DataFrame()
-        # recs = findFakeFlares(
-        #     fake_lc,
-        #     gaps,
-        #     n1=n1,
-        #     n2=n2,
-        #     n3=n3,
-        #     minSep=minSep,
-        #     maximumGap=maximumGap,
-        #     minimumObservationPeriod=minimumObservationPeriod
-        # )
-        # fake_lc.rename(columns={'"fluxDetrended"': '"fluxDetrendedOld"'}, inplace=True)
-        # fake_lc_det = detrendSavGol(
-        #     fake_lc,
-        #     gaps,
-        #     3,
-        #     "photo",
-        #     5
-        #     )
-        fluxes_fake, recs = findFlares(
-            fake_lc,
-            n1,
-            n2,
-            n3,
-            minSep,
-            0,
-            maximumGap,
-            minimumObservationPeriod,
-            "photo",
-            # sym
-            )
-        print("recs", len(recs))
-        # recs.to_pickle(f"./{itera}_recs.pkl")
-        # merge injected and recovered flares
-        len_of_table = len(recs)
-        injs["rec"] = numpy.array(numpy.NaN, dtype=float)
-        injs["rec"] = 0.
-        # recs["rec"] = numpy.array(numpy.NaN, dtype=float)
-        # recs["rec"] = 0.
-        injs['key'] = 1
-        recs['key'] = 1
-        merged = injs.merge(recs,how='outer').drop(columns='key')
-        print("before cross", len(merged))
-        # merged[]
-        merged_recovered = merged[(merged["tstart"] < merged["peak_time"]) & (merged["tstop"]> merged["peak_time"])]
-        merged_recovered.loc[:, 'rec'] = 1
-        print("after cross", len(merged_recovered))
-        rest = injs[~injs.amplitude.isin(merged_recovered["amplitude"].values)]
-        rest.loc[:, 'rec']  = 0
-        rest = rest.drop(columns='key')
-        merged_all = pandas.concat([merged_recovered, rest])
+#         print("after cross", len(merged_recovered))
+#         rest = injs[~injs.amplitude.isin(merged_recovered["amplitude"].values)]
+#         rest.loc[:, 'rec']  = 0
+#         rest = rest.drop(columns='key')
+#         merged_all = pandas.concat([merged_recovered, rest])
 
-        # print("len(merged_all)", len(merged_all))
+#         # print("len(merged_all)", len(merged_all))
 
-        # merged = recs.merge(injs, on='key').drop(columns='key')
-        # merged['overlap'] = (merged['tstart_x'] <= merged["peak_time"]) & (merged['tstop_x'] >= merged["peak_time"])
-        # overlapping_rows = merged[merged['overlap']]
-        # overlapping_indices = overlapping_rows['tstart_x'].unique()
-        # print("overlapping_indices", len(recs), len(overlapping_indices))  # Get unique tstart values of overlapping rows
-        # recs = recs[recs['tstart'].isin(overlapping_indices)]
-        # print("resulting recs", len(recs))
-        # fake_flares = fake_flares[fake_flares['tstart'].isin(overlapping_indices)]
-
-
-        # for idxj, rowj in injs.iterrows():
-        #     for idxr, rowr in recs.iterrows():
-        #         d=0
-        #         # if injs.at[r,"rec"] != 1:
-        #         value_to_put_inbetween = injs.at[idxj, "peak_time"]
-        #         if (
-        #             value_to_put_inbetween >= recs.at[idxr, "tstart"]
-        #             and
-        #             value_to_put_inbetween <= recs.at[idxr, "tstop"]
-        #         ):
-        #             print("Found", idxj, idxr)
-        #             # recs.at[idxr,"istart"] = recs.at[idxr,"istart"]
-        #             # recs.at[idxr,"istop"] = recs.at[idxr,"istop"]
-        #             # recs.at[idxr,"tstart"] = recs.at[idxr,"tstart"]
-        #             # recs.at[idxr,"tstop"] = recs.at[idxr,"tstop"]
-        #             # recs.at[idxr,"ed_rec"] = recs.at[idxr,"ed_rec"]
-        #             # recs.at[idxr,"ampl_rec"] = recs.at[idxr,"ampl_rec"]
-        #             # recs.at[idxr,"total_n_valid_data_points"] = recs.at[idxj,"total_n_valid_data_points"]
-        #             # recs.at[idxr,"dur"] = recs.at[idxj,"dur"]
-        #             recs.at[idxr,"rec"]=1
-        #             recs.at[idxr, "duration_d"] = injs.at[idxj, "duration_d"]
-        #             recs.at[idxr, "amplitude"] = injs.at[idxj, "amplitude"]
-        #             recs.at[idxr, "ed_inj"] = injs.at[idxj, "ed_inj"]
-        #             recs.at[idxr, "peak_time"] = injs.at[idxj, "peak_time"]
-        #             injs.at[idxj, "rec"] = 1
-        #             m+=1
-    #     result = []
-    #     for idx, row in injs.iterrows():
-    #         peak_time = row['peak_time']
-
-    #         # Filter rows in df2 where peak_time is within [tstart, tstop]
-    #         overlap_rows = recs[(recs['tstart'] <= peak_time) & (recs['tstop'] >= peak_time)]
-    #         if len(overlap_rows)>0:
-    #             for col in recs.columns:
-    #                 print("overlap_rows", overlap_rows)
-    #                 overlap_rows["duration_d"] = injs.at[idx, "duration_d"]
-    #                 overlap_rows["amplitude"] = injs.at[idx,"amplitude"]
-    #                 overlap_rows["ed_inj"] = injs.at[idx,"ed_inj"]
-    #                 overlap_rows["peak_time"] = injs.at[idx,"peak_time"]
-    #                 overlap_rows["rec"] = 1
-    # # Append to result list
-    #             result.append(overlap_rows)
-    #     final_result = pandas.concat(result, ignore_index=True)
-        # rest = injs[~injs.amplitude.isin(flares["ampl_rec"].values)]
-        # listOfAmplitudes = list(rest["amplitude"].values)
-        # print("listOfAmplitudes", listOfAmplitudes)
-        # # listOfDurations = list(recs["dur"].values)
-        # rest = injs[~injs.amplitude.isin(recs["ampl_rec"].values)]
-        # rest["rec"] = 0
-        # merged = injs.merge(rest, on='key').drop(columns='key')
-        # overlapping_rows = merged[merged['overlap']]
-        # overlapping_indices = overlapping_rows['tstart_x'].unique()
-        # merged_amp = injs[injs['tstart'].isin(overlapping_indices)]
-        # recs = pandas.concat([final_result,rest])
-        # for r, row in injs.iterrows():
-        #     if (row["rec"] == 0
-        #     and
-        #     pandas.notnull(injs.at[r,"amplitude"])
-        #     and
-        #     injs.at[r,"amplitude"] in listOfAmplitudes
-        #     ):
-        #         fake_flares.at[m, "duration_d"] = injs.at[r, "duration_d"]
-        #         fake_flares.at[m, "amplitude"] = injs.at[r, "amplitude"]
-        #         fake_flares.at[m, "ed_inj"] = injs.at[r, "ed_inj"]
-        #         fake_flares.at[m, "peak_time"] = injs.at[r, "peak_time"]
-        #         fake_flares.at[m, "rec"] = 0
-        #         m+=1
-            # elif (row["rec"] == 0
-            # and
-            # pandas.notnull(injs.at[r,"duration_d"])
-            # and
-            # injs.at[r,"duration_d"] not in listOfDurations
-            # ):
-            #     fake_flares.at[m, "duration_d"] = injs.at[r, "duration_d"]
-            #     fake_flares.at[m, "amplitude"] = injs.at[r, "amplitude"]
-            #     fake_flares.at[m, "ed_inj"] = injs.at[r, "ed_inj"]
-            #     fake_flares.at[m, "peak_time"] = injs.at[r, "peak_time"]
-            #     fake_flares.at[m, "rec"] = 0
-            #     m+=1
-        fake_flares = pandas.concat([fake_flares,merged_all])
-        print("len(fake_flares)", len(fake_flares))
+#         # merged = recs.merge(injs, on='key').drop(columns='key')
+#         # merged['overlap'] = (merged['tstart_x'] <= merged["peak_time"]) & (merged['tstop_x'] >= merged["peak_time"])
+#         # overlapping_rows = merged[merged['overlap']]
+#         # overlapping_indices = overlapping_rows['tstart_x'].unique()
+#         # print("overlapping_indices", len(recs), len(overlapping_indices))  # Get unique tstart values of overlapping rows
+#         # recs = recs[recs['tstart'].isin(overlapping_indices)]
+#         # print("resulting recs", len(recs))
+#         # fake_flares = fake_flares[fake_flares['tstart'].isin(overlapping_indices)]
 
 
+#         # for idxj, rowj in injs.iterrows():
+#         #     for idxr, rowr in recs.iterrows():
+#         #         d=0
+#         #         # if injs.at[r,"rec"] != 1:
+#         #         value_to_put_inbetween = injs.at[idxj, "peak_time"]
+#         #         if (
+#         #             value_to_put_inbetween >= recs.at[idxr, "tstart"]
+#         #             and
+#         #             value_to_put_inbetween <= recs.at[idxr, "tstop"]
+#         #         ):
+#         #             print("Found", idxj, idxr)
+#         #             # recs.at[idxr,"istart"] = recs.at[idxr,"istart"]
+#         #             # recs.at[idxr,"istop"] = recs.at[idxr,"istop"]
+#         #             # recs.at[idxr,"tstart"] = recs.at[idxr,"tstart"]
+#         #             # recs.at[idxr,"tstop"] = recs.at[idxr,"tstop"]
+#         #             # recs.at[idxr,"ed_rec"] = recs.at[idxr,"ed_rec"]
+#         #             # recs.at[idxr,"ampl_rec"] = recs.at[idxr,"ampl_rec"]
+#         #             # recs.at[idxr,"total_n_valid_data_points"] = recs.at[idxj,"total_n_valid_data_points"]
+#         #             # recs.at[idxr,"dur"] = recs.at[idxj,"dur"]
+#         #             recs.at[idxr,"rec"]=1
+#         #             recs.at[idxr, "duration_d"] = injs.at[idxj, "duration_d"]
+#         #             recs.at[idxr, "amplitude"] = injs.at[idxj, "amplitude"]
+#         #             recs.at[idxr, "ed_inj"] = injs.at[idxj, "ed_inj"]
+#         #             recs.at[idxr, "peak_time"] = injs.at[idxj, "peak_time"]
+#         #             injs.at[idxj, "rec"] = 1
+#         #             m+=1
+#     #     result = []
+#     #     for idx, row in injs.iterrows():
+#     #         peak_time = row['peak_time']
+
+#     #         # Filter rows in df2 where peak_time is within [tstart, tstop]
+#     #         overlap_rows = recs[(recs['tstart'] <= peak_time) & (recs['tstop'] >= peak_time)]
+#     #         if len(overlap_rows)>0:
+#     #             for col in recs.columns:
+#     #                 print("overlap_rows", overlap_rows)
+#     #                 overlap_rows["duration_d"] = injs.at[idx, "duration_d"]
+#     #                 overlap_rows["amplitude"] = injs.at[idx,"amplitude"]
+#     #                 overlap_rows["ed_inj"] = injs.at[idx,"ed_inj"]
+#     #                 overlap_rows["peak_time"] = injs.at[idx,"peak_time"]
+#     #                 overlap_rows["rec"] = 1
+#     # # Append to result list
+#     #             result.append(overlap_rows)
+#     #     final_result = pandas.concat(result, ignore_index=True)
+#         # rest = injs[~injs.amplitude.isin(flares["ampl_rec"].values)]
+#         # listOfAmplitudes = list(rest["amplitude"].values)
+#         # print("listOfAmplitudes", listOfAmplitudes)
+#         # # listOfDurations = list(recs["dur"].values)
+#         # rest = injs[~injs.amplitude.isin(recs["ampl_rec"].values)]
+#         # rest["rec"] = 0
+#         # merged = injs.merge(rest, on='key').drop(columns='key')
+#         # overlapping_rows = merged[merged['overlap']]
+#         # overlapping_indices = overlapping_rows['tstart_x'].unique()
+#         # merged_amp = injs[injs['tstart'].isin(overlapping_indices)]
+#         # recs = pandas.concat([final_result,rest])
+#         # for r, row in injs.iterrows():
+#         #     if (row["rec"] == 0
+#         #     and
+#         #     pandas.notnull(injs.at[r,"amplitude"])
+#         #     and
+#         #     injs.at[r,"amplitude"] in listOfAmplitudes
+#         #     ):
+#         #         fake_flares.at[m, "duration_d"] = injs.at[r, "duration_d"]
+#         #         fake_flares.at[m, "amplitude"] = injs.at[r, "amplitude"]
+#         #         fake_flares.at[m, "ed_inj"] = injs.at[r, "ed_inj"]
+#         #         fake_flares.at[m, "peak_time"] = injs.at[r, "peak_time"]
+#         #         fake_flares.at[m, "rec"] = 0
+#         #         m+=1
+#             # elif (row["rec"] == 0
+#             # and
+#             # pandas.notnull(injs.at[r,"duration_d"])
+#             # and
+#             # injs.at[r,"duration_d"] not in listOfDurations
+#             # ):
+#             #     fake_flares.at[m, "duration_d"] = injs.at[r, "duration_d"]
+#             #     fake_flares.at[m, "amplitude"] = injs.at[r, "amplitude"]
+#             #     fake_flares.at[m, "ed_inj"] = injs.at[r, "ed_inj"]
+#             #     fake_flares.at[m, "peak_time"] = injs.at[r, "peak_time"]
+#             #     fake_flares.at[m, "rec"] = 0
+#             #     m+=1
+#         fake_flares = pandas.concat([fake_flares,merged_all])
+#         print("len(fake_flares)", len(fake_flares))
 
 
 
 
 
-        bar.update(itera + 1)
-
-        # add to previous runs of sampleFlareRecovery on the same LC
-        # or create new table
-        # if len(fake_flares) > 0:
-        # fake_flares = pandas.concat([fake_flares, merged_all], ignore_index=True)
-
-        # fake_flares = pandas.concat([fake_flares, recs], ignore_index=True)
-        # else:
-        #     fake_flares = recs
-
-    bar.finish()
 
 
+#         bar.update(itera + 1)
+
+#         # add to previous runs of sampleFlareRecovery on the same LC
+#         # or create new table
+#         # if len(fake_flares) > 0:
+#         # fake_flares = pandas.concat([fake_flares, merged_all], ignore_index=True)
+
+#         # fake_flares = pandas.concat([fake_flares, recs], ignore_index=True)
+#         # else:
+#         #     fake_flares = recs
+
+#     bar.finish()
 
 
-    # Step 2: Filter for overlapping intervals
-    # merged['overlap'] = (merged['tstart_x'] <= merged['tstop_y']) & (merged['tstop_x'] >= merged['tstart_y'])
-    # merged['overlap'] = (merged['tstart_x'] <= merged['tstop_y']) & (merged['tstop_x'] >= merged['tstart_y'])
 
-    return flares, fake_flares
+
+#     # Step 2: Filter for overlapping intervals
+#     # merged['overlap'] = (merged['tstart_x'] <= merged['tstop_y']) & (merged['tstop_x'] >= merged['tstart_y'])
+#     # merged['overlap'] = (merged['tstart_x'] <= merged['tstop_y']) & (merged['tstop_x'] >= merged['tstart_y'])
+
+#     return flares, fake_flares
 
 
 # def setupBins(
@@ -2704,7 +2760,13 @@ def sampleFlareRecovery(
 
 
 def findIntervalValue(value1, value2, df, typ):
-    # find the interval for value1 in the first level of the index
+    """
+    In two-indexed Pandas data frame, the function will
+    find the corresponding value, and return it as well as
+    the value from "counts" and "std" columns. The values 1 and 2 are usually
+    amplitude and duration of the flare as observed.
+    """
+    # find the interval for value 1 in the first level of the index
     interval1 = next(
         (
             idx for idx in df.index.get_level_values(0).unique()
@@ -2717,7 +2779,7 @@ def findIntervalValue(value1, value2, df, typ):
         None
     )
 
-    # find the interval for value2 in the second level of the index
+    # find the interval for value 2 in the second level of the index
     interval2 = next(
         (
             idx for idx in df.index.get_level_values(1).unique()
@@ -2882,248 +2944,248 @@ def plotHeatmap(
     return fig
 
 
-def characterizeFlares(
-    flares,
-    fake_flares,
-    ampl,
-    dur,
-    otherfunc="count",
-    plot_heatmap=True
-):
-    """
-    Assign ED recovery ratios, and recovery probability to all flares
-    whose recovered parameters are covered by the synthetic data.
+# def characterizeFlares(
+#     flares,
+#     fake_flares,
+#     ampl,
+#     dur,
+#     otherfunc="count",
+#     plot_heatmap=True
+# ):
+#     """
+#     Assign ED recovery ratios, and recovery probability to all flares
+#     whose recovered parameters are covered by the synthetic data.
 
-    Parameters:
+#     Parameters:
 
-    - `flares`: flare table;
-    - `fake_flares`: injection-recovery table;
-    - `ampl`: ?;
-    - `dur`: ?;
-    - `otherfunc`: additional column for statistical analysis. Can accept
-    `count`, `std`, and other simple Pandas methods that work
-    on groupby objects.
-    - `plot_heatmap`: produce heatmaps for `recovery_probability` and `ed_ratio`.
+#     - `flares`: flare table;
+#     - `fake_flares`: injection-recovery table;
+#     - `ampl`: ?;
+#     - `dur`: ?;
+#     - `otherfunc`: additional column for statistical analysis. Can accept
+#     `count`, `std`, and other simple Pandas methods that work
+#     on groupby objects.
+#     - `plot_heatmap`: produce heatmaps for `recovery_probability` and `ed_ratio`.
 
-    Returns:
+#     Returns:
 
-    - flares with additional columns.
-    """
+#     - flares with additional columns.
+#     """
 
-    # not used anywhere yet
-    amplrec = "ampl_rec",
-    durrec = "dur",
-    amplinj = "amplitude",
-    durinj = "duration_d"
+#     # not used anywhere yet
+#     amplrec = "ampl_rec",
+#     durrec = "dur",
+#     amplinj = "amplitude",
+#     durinj = "duration_d"
 
-    # for index, row in fake_flares.iterrows():
-    #     if pandas.isnull(row["ed_rec"]) and pandas.notnull(row["ed_inj"]) :
-    #         fake_flares.at[index, "ed_rec"] = 0.0
-    # define observed flare duration
-
-
-    if "dur" not in flares.columns:
-        flares["dur"] = flares["tstop"] - flares["tstart"]
-    if "dur" not in fake_flares.columns:
-        fake_flares["dur"] = fake_flares["tstop"] - fake_flares["tstart"]
-    if "rec" not in fake_flares.columns:
-        for index, row in fake_flares.iterrows():
-            if pandas.notna(row["ed_rec"]):
-                fake_flares.at[index, "rec"] = 1.0
-            else:
-                fake_flares.at[index, "rec"] = 0.0
-    flares = flares.dropna(subset=["ed_rec"])
-    # for ind, row in fake_flares.iterrows():
-    #     if pandas.isnull(row["ed_rec"]):
-    #         fake_flares.at[ind, "ed_rec"] = 0.0
-    # ampl_bins, dur_bins  = setupBins(fake_flares, flares, ampl_bins=None, dur_bins=None, flares_per_bin=200)
-    if len(ampl) <3:
-        ampl_bins = numpy.arange(ampl[0], ampl[1], (ampl[1] - ampl[0]) / 20.0)
-    else:
-        ampl_bins = ampl
-    if len(dur) <3:
-        dur_bins = numpy.arange(dur[0], dur[1], (dur[1] - dur[0]) / 20.0)
-    else:
-        dur_bins = dur
-    print("dur_bins", len(dur_bins), dur_bins)
-    # print("fake_flares", fake_flares)
-    # fake_flares_cop = fake_flares.query(
-    #     "`amplitude`.notna() & `duration_d`.notna()"
-    # )
-    fake_flares_cop = fake_flares
-    fake_flares_cop = fake_flares_cop.assign(
-        Amplitude=pandas.cut(fake_flares_cop["amplitude"], ampl_bins),
-        Duration=pandas.cut(fake_flares_cop["duration_d"], dur_bins)
-    )
-    # fake_flares.dropna(how='any', subset=['Amplitude','Duration'], axis=1)
-    # fake_flares_cop = fake_flares_cop.query("`ed_rec` !=0.0")
-    types = {
-        "amplitude_ratio": ( "ampl_rec", "amplitude","amplitude_ratio"),
-        "duration_ratio": ( "dur","duration_d", "duration_ratio"),
-        "ed_ratio": ( "ed_rec", "ed_inj","ed_ratio"),
-
-    }
-
-    # print("all flares injected and recovered", fake_flares_cop)
+#     # for index, row in fake_flares.iterrows():
+#     #     if pandas.isnull(row["ed_rec"]) and pandas.notnull(row["ed_inj"]) :
+#     #         fake_flares.at[index, "ed_rec"] = 0.0
+#     # define observed flare duration
 
 
-    for typ in ["recovery_probability"]:
-        grouped = fake_flares_cop.groupby(["Amplitude", "Duration"])
-        # print(
-        #     "grouped", grouped["rec"].mean(),
-        #     "count", grouped["rec"].count()
-        # )
-        d2 = grouped["rec"].mean()  # .sum() #/ grouped["rec"].count()
+#     if "dur" not in flares.columns:
+#         flares["dur"] = flares["tstop"] - flares["tstart"]
+#     if "dur" not in fake_flares.columns:
+#         fake_flares["dur"] = fake_flares["tstop"] - fake_flares["tstart"]
+#     if "rec" not in fake_flares.columns:
+#         for index, row in fake_flares.iterrows():
+#             if pandas.notna(row["ed_rec"]):
+#                 fake_flares.at[index, "rec"] = 1.0
+#             else:
+#                 fake_flares.at[index, "rec"] = 0.0
+#     flares = flares.dropna(subset=["ed_rec"])
+#     # for ind, row in fake_flares.iterrows():
+#     #     if pandas.isnull(row["ed_rec"]):
+#     #         fake_flares.at[ind, "ed_rec"] = 0.0
+#     # ampl_bins, dur_bins  = setupBins(fake_flares, flares, ampl_bins=None, dur_bins=None, flares_per_bin=200)
+#     if len(ampl) <3:
+#         ampl_bins = numpy.arange(ampl[0], ampl[1], (ampl[1] - ampl[0]) / 20.0)
+#     else:
+#         ampl_bins = ampl
+#     if len(dur) <3:
+#         dur_bins = numpy.arange(dur[0], dur[1], (dur[1] - dur[0]) / 20.0)
+#     else:
+#         dur_bins = dur
+#     print("dur_bins", len(dur_bins), dur_bins)
+#     # print("fake_flares", fake_flares)
+#     # fake_flares_cop = fake_flares.query(
+#     #     "`amplitude`.notna() & `duration_d`.notna()"
+#     # )
+#     fake_flares_cop = fake_flares
+#     fake_flares_cop = fake_flares_cop.assign(
+#         Amplitude=pandas.cut(fake_flares_cop["amplitude"], ampl_bins),
+#         Duration=pandas.cut(fake_flares_cop["duration_d"], dur_bins)
+#     )
+#     # fake_flares.dropna(how='any', subset=['Amplitude','Duration'], axis=1)
+#     # fake_flares_cop = fake_flares_cop.query("`ed_rec` !=0.0")
+#     types = {
+#         "amplitude_ratio": ( "ampl_rec", "amplitude","amplitude_ratio"),
+#         "duration_ratio": ( "dur","duration_d", "duration_ratio"),
+#         "ed_ratio": ( "ed_rec", "ed_inj","ed_ratio"),
 
-        print("d2",d2)
+#     }
 
-        # d3 = fake_flares_cop.apply(
-        #     lambda d: (d["Amplitude"], d["Duration"]), axis=1
-        # ).count()
-        d3 = grouped["rec"].count()
-        print("d3",d3)
-        # probability = pandas.DataFrame(
-        #     {"recovery_probability": d2, "counts": d3}
-        # )
-        # d4 = grouped["rec"].dropna().std()
-        d4 = grouped["rec"].apply(lambda x: x.dropna().std())
-        probability = pandas.DataFrame({"recovery_probability": d2, "counts": d3, "std": d4})
-        # probability = probability.loc[probability.index.notna().all(level=None)]
-        # probability = probability.reindex(probability.index.dropna())
-        # flares["recovery_probability_count"] = numpy.array(numpy.NaN, dtype=int)
-        # reset the index if needed
-        # probability = probability.reset_index()
-        print(probability, type(probability))
-        probability.to_csv(f"./probability.csv")
+#     # print("all flares injected and recovered", fake_flares_cop)
 
-        print("Probab typ", typ, "rec", probability[typ])
-        probability = probability.reindex(probability.index.dropna())
-        probability = probability.dropna(how="all", axis=0)
 
-        for index, row in flares.iterrows():
-            dura = flares.at[index, "dur"]
-            amp = flares.at[index, "ampl_rec"]
-            print("dura, amp", dura, amp)
-            pavule, counts, std = findIntervalValue(amp, dura, probability, typ)
-            print("pavule", pavule, counts, std )
-            flares.at[index, "recovery_probability"] = pavule
-            flares.at[index,"recovery_probability_count"] = counts
-            flares.at[index,"recovery_probability_std"] = std
+#     for typ in ["recovery_probability"]:
+#         grouped = fake_flares_cop.groupby(["Amplitude", "Duration"])
+#         # print(
+#         #     "grouped", grouped["rec"].mean(),
+#         #     "count", grouped["rec"].count()
+#         # )
+#         d2 = grouped["rec"].mean()  # .sum() #/ grouped["rec"].count()
 
-        if plot_heatmap == True:
-            plotHeatmap(
-                probability,
-                "recovery_probability",
-                label="Recovery Probability",
-                ID=None,
-                valcbr=(0.0, 1.0),
-                # ovalcbr=(0,50),
-                xlabel="duration [s]",
-                ylabel="amplitude",
-                cmap="viridis",
-                font_scale=1.5,
-                interpolate=False
-            )
+#         print("d2",d2)
 
-    for typ in ["amplitude_ratio", "duration_ratio", "ed_ratio"]:
-        fake_flares_cop["rel"] =  numpy.array(numpy.NaN, dtype=float)
-        fake_flares_cop["rel"] = (
-            fake_flares_cop[types[typ][0]]
-            /
-            fake_flares_cop[types[typ][1]]
-        )
+#         # d3 = fake_flares_cop.apply(
+#         #     lambda d: (d["Amplitude"], d["Duration"]), axis=1
+#         # ).count()
+#         d3 = grouped["rec"].count()
+#         print("d3",d3)
+#         # probability = pandas.DataFrame(
+#         #     {"recovery_probability": d2, "counts": d3}
+#         # )
+#         # d4 = grouped["rec"].dropna().std()
+#         d4 = grouped["rec"].apply(lambda x: x.dropna().std())
+#         probability = pandas.DataFrame({"recovery_probability": d2, "counts": d3, "std": d4})
+#         # probability = probability.loc[probability.index.notna().all(level=None)]
+#         # probability = probability.reindex(probability.index.dropna())
+#         # flares["recovery_probability_count"] = numpy.array(numpy.NaN, dtype=int)
+#         # reset the index if needed
+#         # probability = probability.reset_index()
+#         print(probability, type(probability))
+#         probability.to_csv(f"./probability.csv")
 
-        grouped = fake_flares_cop.groupby(["Amplitude", "Duration"])
-        d2 = grouped["rel"].median()
-        # d2 = d2.dropna(how="all", axis=0)
-        d3 = grouped["rel"].count()
-        # fake_flares_cop.apply(
-        #     lambda d: (d["Amplitude"], d["Duration"]), axis=1
-        # ).count()
-        # d4 = grouped["rel"].dropna().std()
-        d4 = grouped["rel"].apply(lambda x: x.dropna().std())
-        print("d4", d4)
-        # for group_name, group_values in grouped["rel"]:
-        #     print(f"Group: {group_name}")
-        #     print(group_values.tolist())
-        ratio = pandas.DataFrame({typ: d2, "counts": d3, "std": d4})
-        ratio = ratio.reindex(ratio.index.dropna())
-        ratio = ratio.dropna(how="all", axis=0)
-        print(ratio)
-        ratio.to_csv(f"./{typ}_ratio.csv")
+#         print("Probab typ", typ, "rec", probability[typ])
+#         probability = probability.reindex(probability.index.dropna())
+#         probability = probability.dropna(how="all", axis=0)
 
-        print("Ratio typ", typ, "rec", ratio[typ])
+#         for index, row in flares.iterrows():
+#             dura = flares.at[index, "dur"]
+#             amp = flares.at[index, "ampl_rec"]
+#             print("dura, amp", dura, amp)
+#             pavule, counts, std = findIntervalValue(amp, dura, probability, typ)
+#             print("pavule", pavule, counts, std )
+#             flares.at[index, "recovery_probability"] = pavule
+#             flares.at[index,"recovery_probability_count"] = counts
+#             flares.at[index,"recovery_probability_std"] = std
 
-        for index, row in flares.iterrows():
-            dura = flares.at[index, "dur"]
-            amp = flares.at[index, "ampl_rec"]
-            savule, counts, std = findIntervalValue(amp, dura, ratio, typ)
-            print(savule, counts, std)
-            flares.at[index, typ] = savule
-            flares.at[index, f"{typ}_counts"] = counts
-            flares.at[index, f"{typ}_std"] = std
+#         if plot_heatmap == True:
+#             plotHeatmap(
+#                 probability,
+#                 "recovery_probability",
+#                 label="Recovery Probability",
+#                 ID=None,
+#                 valcbr=(0.0, 1.0),
+#                 # ovalcbr=(0,50),
+#                 xlabel="duration [s]",
+#                 ylabel="amplitude",
+#                 cmap="viridis",
+#                 font_scale=1.5,
+#                 interpolate=False
+#             )
 
-    # for typ in ["ed_ratio"]:
-    #     fake_flares_cop["rel"] =  numpy.array(numpy.NaN, dtype=float)
-    #     fake_flares_cop["rel"] = (
-    #         fake_flares_cop[types[typ][0]]
-    #         /
-    #         fake_flares_cop[types[typ][1]]
-    #     )
-    #     # fake_flares_cop = fake_flares_cop.query("`rel` !=0.0")
-    #     grouped = fake_flares_cop.groupby(["Amplitude", "Duration"])
-    #     d2 = grouped["rel"].median()
-    #     # d2 = d2.dropna(how="all", axis=0)
-    #     d3 = fake_flares_cop.apply(
-    #         lambda d: (d["Amplitude"], d["Duration"]), axis=1
-    #     ).value_counts()
+#     for typ in ["amplitude_ratio", "duration_ratio", "ed_ratio"]:
+#         fake_flares_cop["rel"] =  numpy.array(numpy.NaN, dtype=float)
+#         fake_flares_cop["rel"] = (
+#             fake_flares_cop[types[typ][0]]
+#             /
+#             fake_flares_cop[types[typ][1]]
+#         )
 
-    #     # ratio = pandas.DataFrame({typ: d2, "counts": d3})
-    #     # ratio = ratio.reindex(ratio.index.dropna())
-    #     d4 = grouped["rel"].std()
-    #     ratio = pandas.DataFrame({typ: d2, "counts": d3, "std": d4})
-    #     ratio = ratio.reindex(ratio.index.dropna())
-    #     ratio = ratio.dropna(how="all", axis=0)
-    #     print(ratio)
-    #     ratio.to_csv(f"./{typ}_ratio.csv")
-    #     print("Ratio typ", typ, "rec", ratio[typ])
+#         grouped = fake_flares_cop.groupby(["Amplitude", "Duration"])
+#         d2 = grouped["rel"].median()
+#         # d2 = d2.dropna(how="all", axis=0)
+#         d3 = grouped["rel"].count()
+#         # fake_flares_cop.apply(
+#         #     lambda d: (d["Amplitude"], d["Duration"]), axis=1
+#         # ).count()
+#         # d4 = grouped["rel"].dropna().std()
+#         d4 = grouped["rel"].apply(lambda x: x.dropna().std())
+#         print("d4", d4)
+#         # for group_name, group_values in grouped["rel"]:
+#         #     print(f"Group: {group_name}")
+#         #     print(group_values.tolist())
+#         ratio = pandas.DataFrame({typ: d2, "counts": d3, "std": d4})
+#         ratio = ratio.reindex(ratio.index.dropna())
+#         ratio = ratio.dropna(how="all", axis=0)
+#         print(ratio)
+#         ratio.to_csv(f"./{typ}_ratio.csv")
 
-        # for index, row in flares.iterrows():
-        #     dura = flares.at[index, "dur"]
-        #     amp = flares.at[index, "ampl_rec"]
-        #     savule, counts, std = findIntervalValue(amp, dura, ratio, typ)
-        #     print(savule)
-        #     flares.at[index, typ] = savule
-        #     flares.at[index, f"{typ}_counts"] = counts
-        #     flares.at[index, f"{typ}_std"] = std
+#         print("Ratio typ", typ, "rec", ratio[typ])
 
-        if plot_heatmap == True and typ == "ed_ratio":
-            plotHeatmap(
-                ratio,
-                "ed_ratio",
-                label="ED Ratio",
-                ID=None,
-                valcbr=(0., 1.),
-                # ovalcbr=(0,50),
-                xlabel="duration [s]",
-                ylabel="amplitude",
-                cmap="viridis",
-                font_scale=1.5,
-                interpolate=False
-            )
+#         for index, row in flares.iterrows():
+#             dura = flares.at[index, "dur"]
+#             amp = flares.at[index, "ampl_rec"]
+#             savule, counts, std = findIntervalValue(amp, dura, ratio, typ)
+#             print(savule, counts, std)
+#             flares.at[index, typ] = savule
+#             flares.at[index, f"{typ}_counts"] = counts
+#             flares.at[index, f"{typ}_std"] = std
 
-    # calculate recovery probability from corrected values
-    fake_flares_cop.to_pickle(f"./fake_flares_{typ}.pkl")
-    fake_flares_cop.to_csv(f"./fake_flares_{typ}.csv")
+#     # for typ in ["ed_ratio"]:
+#     #     fake_flares_cop["rel"] =  numpy.array(numpy.NaN, dtype=float)
+#     #     fake_flares_cop["rel"] = (
+#     #         fake_flares_cop[types[typ][0]]
+#     #         /
+#     #         fake_flares_cop[types[typ][1]]
+#     #     )
+#     #     # fake_flares_cop = fake_flares_cop.query("`rel` !=0.0")
+#     #     grouped = fake_flares_cop.groupby(["Amplitude", "Duration"])
+#     #     d2 = grouped["rel"].median()
+#     #     # d2 = d2.dropna(how="all", axis=0)
+#     #     d3 = fake_flares_cop.apply(
+#     #         lambda d: (d["Amplitude"], d["Duration"]), axis=1
+#     #     ).value_counts()
 
-    flares["amplitude_corr"] = flares["ampl_rec"] / flares["amplitude_ratio"]
-    flares["duration_corr"] = flares["dur"] / flares["duration_ratio"]
-    flares["ed_corr"] = flares["ed_rec"] / flares["ed_ratio"]
-    flares["ed_corr_err"] = numpy.sqrt(flares["ed_rec_err"]**2 + flares["ed_corr"]**2 * flares["ed_ratio_std"]**2)
-    flares["amplitude_corr_err"] = flares["amplitude_corr"] * flares["amplitude_ratio_std"] / flares["amplitude_ratio"]
-    flares["duration_corr_err"] = flares["duration_corr"] * flares["duration_ratio_std"] / flares["duration_ratio"]
+#     #     # ratio = pandas.DataFrame({typ: d2, "counts": d3})
+#     #     # ratio = ratio.reindex(ratio.index.dropna())
+#     #     d4 = grouped["rel"].std()
+#     #     ratio = pandas.DataFrame({typ: d2, "counts": d3, "std": d4})
+#     #     ratio = ratio.reindex(ratio.index.dropna())
+#     #     ratio = ratio.dropna(how="all", axis=0)
+#     #     print(ratio)
+#     #     ratio.to_csv(f"./{typ}_ratio.csv")
+#     #     print("Ratio typ", typ, "rec", ratio[typ])
 
-    return flares
+#         # for index, row in flares.iterrows():
+#         #     dura = flares.at[index, "dur"]
+#         #     amp = flares.at[index, "ampl_rec"]
+#         #     savule, counts, std = findIntervalValue(amp, dura, ratio, typ)
+#         #     print(savule)
+#         #     flares.at[index, typ] = savule
+#         #     flares.at[index, f"{typ}_counts"] = counts
+#         #     flares.at[index, f"{typ}_std"] = std
+
+#         if plot_heatmap == True and typ == "ed_ratio":
+#             plotHeatmap(
+#                 ratio,
+#                 "ed_ratio",
+#                 label="ED Ratio",
+#                 ID=None,
+#                 valcbr=(0., 1.),
+#                 # ovalcbr=(0,50),
+#                 xlabel="duration [s]",
+#                 ylabel="amplitude",
+#                 cmap="viridis",
+#                 font_scale=1.5,
+#                 interpolate=False
+#             )
+
+#     # calculate recovery probability from corrected values
+#     fake_flares_cop.to_pickle(f"./fake_flares_{typ}.pkl")
+#     fake_flares_cop.to_csv(f"./fake_flares_{typ}.csv")
+
+#     flares["amplitude_corr"] = flares["ampl_rec"] / flares["amplitude_ratio"]
+#     flares["duration_corr"] = flares["dur"] / flares["duration_ratio"]
+#     flares["ed_corr"] = flares["ed_rec"] / flares["ed_ratio"]
+#     flares["ed_corr_err"] = numpy.sqrt(flares["ed_rec_err"]**2 + flares["ed_corr"]**2 * flares["ed_ratio_std"]**2)
+#     flares["amplitude_corr_err"] = flares["amplitude_corr"] * flares["amplitude_ratio_std"] / flares["amplitude_ratio"]
+#     flares["duration_corr_err"] = flares["duration_corr"] * flares["duration_ratio_std"] / flares["duration_ratio"]
+
+#     return flares
 
 # def setupBins(flares, ampl_bins=None, dur_bins=None, flares_per_bin=None):
 #     """
@@ -3254,100 +3316,6 @@ def setupBins(fake_flares, real_flares, ampl_bins=None, dur_bins=None, flares_pe
     return ampl_bins, dur_bins
 
 
-# def wrapCharacterizationOfFlares(
-#     fake_flares,
-#     flares,
-#     ampl_bins=None,
-#     dur_bins=None,
-#     flares_per_bin=None
-# ):
-#     """
-#     Take injection-recovery results for a data set and the corresponding
-#     flare table. Determine recovery probability, ED ratio, amplitude ratio,
-#     duration ratio, and the respective standard deviation. Count on how many
-#     synthetic flares the results are based.
-
-#     Parameters:
-
-#     - `injrec`: table with injection-recovery results from AltaiPony;
-#     - `flares`: table with flare candidates detected by AltaiPony;
-#     - `ampl_bins`: number of bins in amplitude;
-#     - `dur_bins`: number of bins in duration.
-
-#     Returns:
-
-#     - flares and injrec merged with the characteristics listed above.
-#     """
-
-#     # define observed flare duration
-#     flares["dur"] = flares["tstop"] - flares["tstart"]
-
-#     ampl_bins, dur_bins = setupBins(
-#         fake_flares,
-#         flares,
-#         ampl_bins=ampl_bins,
-#         dur_bins=dur_bins,
-#         flares_per_bin=flares_per_bin
-#     )
-
-#     flares = flares.dropna(subset=["ed_rec"])
-#     injrec['ed_rec'] = injrec['ed_rec'].fillna(0)
-#     injrec['rec'] = injrec['ed_rec'].astype(bool).astype(float)
-
-#     flcc, dscc = characterizeFlares(
-#         flares,
-#         injrec,
-#         otherfunc="count",
-#         amplrec="ampl_rec",
-#         durrec="dur",
-#         amplinj="amplitude",
-#         durinj="duration_d",
-#         ampl_bins=ampl_bins,
-#         dur_bins=dur_bins
-#     )
-
-#     fl, ds = characterizeFlares(
-#         flares,
-#         injrec,
-#         otherfunc="std",
-#         amplrec="ampl_rec",
-#         durrec="dur",
-#         amplinj="amplitude",
-#         durinj="duration_d",
-#         ampl_bins=ampl_bins,
-#         dur_bins=dur_bins
-#     )
-
-#     fl = fl.merge(flcc)
-#     fl = fl.drop_duplicates()
-
-#     fl["ed_corr_err"] = numpy.sqrt(
-#         fl["ed_rec_err"]**2
-#         +
-#         fl["ed_corr"]**2
-#         *
-#         fl["ed_ratio_std"]**2
-#     )
-
-#     fl["amplitude_corr_err"] = (
-#         fl["amplitude_corr"]
-#         *
-#         fl["amplitude_ratio_std"]
-#         /
-#         fl["amplitude_ratio"]
-#     )
-
-#     fl["duration_corr_err"] = (
-#         fl["duration_corr"]
-#         *
-#         fl["duration_ratio_std"]
-#         /
-#         fl["duration_ratio"]
-#     )
-
-#     return fl
-
-
 def modRandom(
     x,
     d: bool = False,
@@ -3372,18 +3340,19 @@ def modRandom(
 
 
 def generateFakeFlareDistribution(
-    nfake,
+    nfake:int,
     d: bool,
     seed: int,
-    ampl,
-    dur,
+    ampl: List[float],
+    dur: List[float],
     mode="uniform"
 ):
     """
     Creates different distributions of fake flares to be injected
     into light curves.
 
-    Parameters: ampl=[1e-4, 5], dur=[0.005, 0.012]
+    Parameters: ampl=[1e-4, 5], dur=[0.005, 0.012] in days - amplitude and duration
+    intervals for binning (the example values are for TESS)
 
     - `nfake`: number of fake flares to be created;
     - `ampl`: amplitude range in relative flux units;
@@ -3394,7 +3363,7 @@ def generateFakeFlareDistribution(
 
     Returns
 
-    - `dur_fake`: durations of generated fake flares in days;
+    - `dur_fake`: durations of generated fake flares in sec;
     - `ampl_fake`: amplitudes of generated fake flares in relative flux units.
     """
     # if mode == "uniform":
@@ -3417,7 +3386,6 @@ def generateFakeFlareDistribution(
     # print(dur_fake.tolist(), ampl_fake.tolist())
 
     return dur_fake.tolist(), ampl_fake.tolist()
-
 
 def sampleFromInterval(interval, n_samples=1, seed=None, mode="uniform"):
     """
@@ -3444,42 +3412,40 @@ def sampleFromInterval(interval, n_samples=1, seed=None, mode="uniform"):
     return samples
 
 
-def sampleFlareRecoveryOld(
-    lc,
-    flares,
-    ampl,
-    dur,
-    iterations,
-    n1,
-    n2,
-    n3,
-    padding,
-    minSep,
-    maximumGap,
-    minimumObservationPeriod,
-    mode=None,
-    func=None,
+def sampleFlareRecovery(
+    lc: pandas.DataFrame,
+    flares: pandas.DataFrame,
+    ampl: List[float],
+    dur: List[float],
+    iterations:int,
+    n1:int,
+    n2:int,
+    n3:int,
+    padding:int,
+    minSep:int,
+    maximumGap: float,
+    minimumObservationPeriod: float,
     fakefreq=0.0005,
-    path=None,
     maxFlaresPerGap=2
-):
-    """
-    Runs a number of injection recovery cycles and characterizes the light
-    curve by recovery probability and equivalent duration underestimation.
-    Inject one flare per light curve.
+) -> Tuple[pandas.DataFrame, pandas.DataFrame]:
+#     """
+#     Runs a number of injection recovery cycles and characterizes the light
+#     curve by recovery probability and equivalent duration underestimation.
+#     Inject at least maxFlaresPerGap value of flares per every continuous period of observation in the light curve.
 
-    Parameters:
+#     Parameters:
 
-    - `iterations`: number of injection/recovery cycles;
-    - `fakefreq`: number of flares per sec, but at least one per continuous
-    observation period will be injected.
+#     - `ampl`: the lowest and highest values of amplitude to assign amplitude bins;
+#     - `dur`: the lowest and highest values of amplitude to assign amplitude bins;
+#     - `iterations`: number of injection/recovery cycles;
+#     - `fakefreq`: number of flares per sec, but at least one per continuous
+#     observation period will be injected.
 
-    Returns:
+#     Returns:
 
-    - `lc`: detrended light curve with all fake_flares listed in the attribute;
-    - `fake_lc`: light curve with the last iteration of synthetic
-    flares injected.
-    """
+#     - `flares`: recovered flares after injection-recovery algorithm;
+#     - `fake_flares`: combined df with fake and recovered flares.
+#     """
 
     flc = lc.copy()
     # print("sample recovery copy of lc", flc.tail(20))
@@ -3511,8 +3477,12 @@ def sampleFlareRecoveryOld(
         # with PdfPages(f'./UV_flux{itera}.pdf') as pdf:
         #     pdf.savefig(fig, bbox_inches='tight')
 
-        fake_lc1, recs = findFlares(fake_lc, n1=n1, n2=n2, n3=n3,minSep=minSep, padding= padding, maximumGap=maximumGap,minimumObservationPeriod=minimumObservationPeriod,waveRange="photo",)
-        # findFakeFlares
+        recs = findFakeFlares(
+            fake_lc, n1=n1, n2=n2, n3=n3,minSep=minSep,
+            padding= padding, maximumGap=maximumGap,minimumObservationPeriod=minimumObservationPeriod,waveRange="photo",)
+        # findFakeFlares fake_lc1,
+        # fake_lc.to_pickle(f"./{itera}_fake_lc.pkl")
+
         # merge injected and recovered flares
         len_of_table = len(recs)
         injs["rec"] = numpy.array(numpy.NaN, dtype=float)
@@ -3531,16 +3501,37 @@ def sampleFlareRecoveryOld(
                     recs.at[index, "peak_time"] = injs.at[r, "peak_time"]
                     recs.at[index,"rec"] = 1
                     injs.at[r, "rec"] = 0
+
+        # if 'ed_inj' not in recs.columns:
+        #     continue
+        # elif len(recs) > 0 and recs['ed_inj'].notnull().values.all():
+        #     recs['ed_ratio'] = recs['ed_rec'] / recs['ed_inj']
+        #     for index, row in recs.iterrows():
+        #         if pandas.notnull(recs["ed_ratio"]) and recs["ed_ratio"]< 10.0:
+        #             recs.at[index,"rec"] = 0
+            # recs = recs.query('`ed_ratio`> 10.0')
         for r,row in injs.iterrows():
-            if row["rec"] == 0:
-                recs.at[len_of_table+m, "duration_d"] = injs.at[r, "duration_d"]
-                recs.at[len_of_table+m, "amplitude"] = injs.at[r, "amplitude"]
-                recs.at[len_of_table+m, "ed_inj"] = injs.at[r, "ed_inj"]
-                recs.at[len_of_table+m, "peak_time"] = injs.at[r, "peak_time"]
-                recs.at[len_of_table+m,"rec"] = 0
-                m+=1
-
-
+            # if row["rec"] in recs.columns and row["rec"] == 0:
+            recs.at[len_of_table+m, "duration_d"] = injs.at[r, "duration_d"]
+            recs.at[len_of_table+m, "amplitude"] = injs.at[r, "amplitude"]
+            recs.at[len_of_table+m, "ed_inj"] = injs.at[r, "ed_inj"]
+            recs.at[len_of_table+m, "peak_time"] = injs.at[r, "peak_time"]
+            recs.at[len_of_table+m,"rec"] = 0
+            m+=1
+        # recs['ed_ratio'] = recs['ed_rec'] / recs['ed_inj']
+        nan_cols = [
+                    "istart", "istop", "tstart", "tstop",
+                    "ed_rec", "ampl_rec", "total_n_valid_data_points", "dur"
+                    ]
+        for index, row in recs.iterrows():
+            if "rec" in recs.columns and row["rec"] == 0:
+                continue
+            elif "ed_rec" in recs.columns and "ed_inj" in recs.columns:
+                ratio = recs.at[index, 'ed_rec'] / recs.at[index,'ed_inj']
+                if not numpy.isnan(ratio) and ratio > 15.0:
+                    recs.at[index, "rec"] = 0
+                    recs.loc[index, nan_cols] = numpy.nan
+                    # recs.at[index, "ed_rec"] = numpy.NaN
         bar.update(itera + 1)
 
         # add to previous runs of sampleFlareRecovery on the same LC
@@ -3554,15 +3545,13 @@ def sampleFlareRecoveryOld(
 
     return flares, fake_flares
 
-
-def characterizeFlaresOld(
-    flares,
-    fake_flares,
-    ampl,
-    dur,
-    otherfunc="count",
+def characterizeFlares(
+    flares: pandas.DataFrame,
+    fake_flares: pandas.DataFrame,
+    ampl: List[float],
+    dur: List[float],
     plot_heatmap=True
-):
+) -> pandas.DataFrame:
     """
     Assign ED recovery ratios, and recovery probability to all flares
     whose recovered parameters are covered by the synthetic data.
@@ -3571,10 +3560,8 @@ def characterizeFlaresOld(
 
     - `flares`: flare table;
     - `fake_flares`: injection-recovery table;
-    - `ampl`: ?;
-    - `dur`: ?;
-    - `otherfunc`: additional column for statistical analysis. Can accept
-    `count`, `std`, and other simple Pandas methods that work
+    - `ampl`: the lowest and highest values of amplitude to assign amplitude bins;
+    - `dur`: the lowest and highest values of amplitude to assign amplitude bins;
     on groupby objects.
     - `plot_heatmap`: produce heatmaps for `recovery_probability` and `ed_ratio`.
 
@@ -3604,9 +3591,10 @@ def characterizeFlaresOld(
     ampl_bins = numpy.arange(ampl[0], ampl[1], (ampl[1] - ampl[0])/15.0)
     dur_bins = numpy.arange(dur[0], dur[1], (dur[1] - dur[0])/15.0)
     # print("fake_flares", fake_flares)
-    fake_flares_cop = fake_flares.query(
-        "`amplitude`.notna() & `duration_d`.notna()"
-    )
+    fake_flares_cop = fake_flares
+    # fake_flares_cop = fake_flares.query(
+    #     "`amplitude`.notna() & `duration_d`.notna()"
+    # )
 
     fake_flares_cop = fake_flares_cop.assign(
         Amplitude=pandas.cut(fake_flares_cop["amplitude"], ampl_bins),
@@ -3618,7 +3606,7 @@ def characterizeFlaresOld(
         "amplitude_ratio": ("ampl_rec", "amplitude", "amplitude_ratio"),
         "duration_ratio": ("dur", "duration_d", "duration_ratio")
     }
-    print("all flares injected and recovered", fake_flares_cop)
+    # print("all flares injected and recovered", fake_flares_cop)
     fake_flares_cop.to_pickle("./fake_flares.pkl")
     fake_flares_cop.to_csv("./fake_flares.csv")
 
@@ -3691,7 +3679,8 @@ def characterizeFlaresOld(
         d3 = fake_flares_cop.apply(
             lambda d: (d["Amplitude"], d["Duration"]), axis=1
         ).value_counts()
-        d4 = grouped["rel"].apply(lambda x: x.dropna().std())
+        # d4 = grouped["rel"].apply(lambda x: x.dropna().std())
+        d4 = grouped["rel"].std()
         ratio = pandas.DataFrame({typ: d2, "counts": d3, "std": d4})
         ratio = ratio.reindex(ratio.index.dropna())
 
@@ -3726,8 +3715,184 @@ def characterizeFlaresOld(
     flares["amplitude_corr"] = flares["ampl_rec"] / flares["amplitude_ratio"]
     flares["duration_corr"] = flares["dur"] / flares["duration_ratio"]
     flares["ed_corr"] = flares["ed_rec"] / flares["ed_ratio"]
-    flares["ed_corr_err"] = numpy.sqrt(flares["ed_rec_err"]**2 + flares["ed_corr"]**2 * flares["ed_ratio_std"]**2)
+    # flares["ed_corr_err"] = numpy.sqrt(flares["ed_rec_err"]**2 + flares["ed_corr"]**2 * flares["ed_ratio_std"]**2)
+    # flares["ed_corr_err"] = flares["ed_corr"] * numpy.sqrt(
+    #         (flares["ed_rec_err"] / flares["ed_rec"])**2 +
+    #         (flares["ed_ratio_std"] / flares["ed_ratio"])**2
+    #     )
+    flares["ed_corr_err"] = flares["ed_rec_err"] / flares["ed_ratio"]
     flares["amplitude_corr_err"] = flares["amplitude_corr"] * flares["amplitude_ratio_std"] / flares["amplitude_ratio"]
     flares["duration_corr_err"] = flares["duration_corr"] * flares["duration_ratio_std"] / flares["duration_ratio"]
+
+    return flares
+
+def findFakeFlares(
+    lightCurve: pandas.DataFrame,
+    n1: int,
+    n2: int,
+    n3: int,
+    minSep: int,
+    padding: int,
+    maximumGap: float,
+    minimumObservationPeriod: float,
+    waveRange: Literal["uv", "photo"],
+    fluxDetrended: Optional[List[float]] = None,
+    sigma: Optional[List[float]] = None,
+    # sym=False
+) -> Tuple[pandas.DataFrame, pandas.DataFrame]:
+    """
+    Obtaining and processing a fake/synthetic light curve with injected flares.
+
+    Parameters:
+
+    - `lightCurve`: pandas table with required columns `time`, `flux`,
+    `fluxError` and optional `fluxDetrended` column;
+    - `n1`: how many sigma the flux value is above;
+    - `n2`: how many sigma and flux error value the flux value is above;
+    - `n3`: number of consecutive points required to flag as a flare;
+    - `minSep`: minimum distance between two candidate start times
+    in data points;
+    - `padding` - how many new indexes to add to the left and right
+    of every original list index;
+    - `maximumGap`: should be larger than step in time series;
+    - `minimumObservationPeriod`: minimum number of data points in continuous
+    observation, without gaps as defined by `maximumGap`;
+    - `waveRange`: which wave range the flux belongs to;
+    - `sigma`: local scatter of the flux. This array should be the same length
+    as the detrended flux array.
+    """
+
+    if waveRange not in ["uv", "photo"]:
+        raise ValueError(f"Unknown wave range: {waveRange}")
+
+
+    gaps = findGaps(
+        lightCurve,
+        maximumGap=maximumGap,
+        # parameter of min time between gaps is needed
+        # to be elevated to the main function
+        minimumObservationPeriod=minimumObservationPeriod
+    )
+
+    detrendedLightCurve = detrendSavGol(
+            lightCurve,
+            gaps,
+            padding,
+            waveRange,
+            0,
+            # sym
+        )
+
+    flares = pandas.DataFrame()
+    # print(lightCurve.head(4))
+    # gaps = findGaps(lightCurve, 30, 10)
+
+    isFlare = None
+    # work on periods of continuous observation with no gaps
+    for (le, ri) in gaps:
+        temp_lightCurve = detrendedLightCurve.iloc[le:ri]
+        # print(temp_lightCurve)
+        error = temp_lightCurve["fluxDetrendedError"]
+        flux = temp_lightCurve["fluxDetrended"]
+        median = temp_lightCurve["iterativeMedian"]
+        time = temp_lightCurve["time"]
+        # A0 = flux - median  # excursion should be positive # "n0"
+        # A1 = numpy.abs(flux - median)/error  # n1
+        # A2 = numpy.abs(flux - median - error) /error # n2
+        # print("outside of isflare",max(A0),max(A1),max(A2))
+        # run final flare-find on DATA - MODEL
+
+        isFlare = findFlaresInContObsPeriod(
+            flux,
+            median,
+            error,
+            sigma[le:ri] if sigma is not None else None,
+            n1=n1,
+            n2=n2,
+            n3=n3
+        )
+        # print(isFlare)
+        temp_lightCurve["isFlare"] = isFlare
+        # print(temp_lightCurve)
+        # pick out final flare candidate indices
+        istart = numpy.array([], dtype="int")
+        istop = numpy.array([], dtype="int")
+        istart_gap = numpy.array([])
+        istop_gap = numpy.array([])
+        candidates = numpy.where(temp_lightCurve["isFlare"] == True)[0]
+        # print("candidates", candidates)
+        if (len(candidates) > 0):
+            # find start and stop index, combine neighboring candidates
+            # in to same events
+            separated_candidates = numpy.where(
+                (numpy.diff(candidates)) > minSep
+            )[0]
+            istart_gap = candidates[
+                numpy.append([0], separated_candidates + 1)
+            ]
+            istop_gap = candidates[
+                numpy.append(
+                    separated_candidates,
+                    [len(candidates) - 1]
+                )
+            ]
+        # print("sep candidates", separated_candidates)
+
+        istart = numpy.array(
+            numpy.append(istart + le, istart_gap + le),
+            dtype="int"
+        )
+        istop = numpy.array(
+            numpy.append(istop + le, istop_gap + le),
+            dtype="int"
+        )
+
+        ed_fake = []
+        ampl_rec = []
+
+        if len(istart) > 0:
+            for (i, j) in zip(istart, istop):
+                lct = temp_lightCurve.loc[i:j]
+                residual = (
+                        lct["fluxDetrended"].values
+                        /
+                        numpy.nanmedian(lct["iterativeMedian"].values)
+                        -
+                        1.0
+                    )
+                x = lct["time"].values  # in seconds, so for days you'll need to add `* 60.0 * 60.0 * 24.0`
+                ed_fake_val = numpy.sum(numpy.diff(x) * residual[:-1])
+                ed_fake.append(ed_fake_val)
+
+                fl = lightCurve["fluxDetrended"].values
+                ampl_rec_val = (
+                    numpy.max(fl[i:j])
+                    /
+                    lightCurve["iterativeMedian"].values[i]
+                    -
+                    1.0
+                )
+                ampl_rec.append(ampl_rec_val)
+
+            tstart = lightCurve.iloc[istart]["time"].values
+            tstop = lightCurve.iloc[istop]["time"].values
+
+            newFlare = pandas.DataFrame(
+                {
+                    "istart": istart,
+                    "istop": istop,
+                    "tstart": tstart,
+                    "tstop": tstop,
+                    "ed_rec": ed_fake,
+                    "ampl_rec": ampl_rec,
+                    "total_n_valid_data_points": len(lightCurve["flux"]),
+                    "dur": tstop - tstart
+                  }
+              )
+
+            flares = pandas.concat([flares, newFlare], ignore_index=True)
+            # print(flares)
+
+    # flaresTableSchema(flares)
 
     return flares
