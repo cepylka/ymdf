@@ -35,16 +35,18 @@ Produces a time-resolved spectrum of flare activity in a Young M Dwarf. Most sui
 
 ## Installing
 
+<!--
 ### From PyPI
 
 ``` sh
-$ pip install ymdf
+$ pip install phab-ymdf
 ```
+-->
 
 ### From sources
 
 ``` sh
-$ cd /path/to/ymdf/
+$ cd /path/to/phab-ymdf/
 $ pip install .
 ```
 
@@ -59,9 +61,9 @@ $ pip install -e .
 You can also build a wheel and distribute/install that instead:
 
 ``` sh
-$ cd /path/to/ymdf/
+$ cd /path/to/phab-ymdf/
 $ python -m build
-$ pip install ./dist/ymdf-*.whl
+$ pip install ./dist/phab_ymdf-*.whl
 ```
 
 ## Tests
