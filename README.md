@@ -84,7 +84,7 @@ $ python -m pytest ./src/phab/tests/some.py -k "test_some_thing"
 
 2. <span id="ref2"></span>  Ekaterina Ilin, Sarah J. Schmidt, Katja Poppenhäger, James R. A. Davenport, Martti H. Kristiansen, Mark Omohundro (2021). "Flares in Open Clusters with K2. II. Pleiades, Hyades, Praesepe, Ruprecht 147, and M67" Astronomy & Astrophysics, Volume 645, id.A42, 25 pp. https://doi.org/10.1051/0004-6361/202039198
 
-3. <span id="ref3"></span>  Mamonova et al. 2026, "Paving the way for studying exoplanetary atmosphere around M dwarfs – Validating a new flare activity model", in prep.
+3. <span id="ref3"></span>  Mamonova, E., Kowalski, A.~F., Herbst, K., Wedemeyer, S., Werner, S.~C.\ 2026.\ Young M-dwarfs flare activity model: Towards better exoplanetary atmospheric characterisation.\ Astronomy and Astrophysics 705. doi:10.1051/0004-6361/202556844.
 
 4. <span id="ref4"></span>  Kowalski A. F., 2022, "Near-Ultraviolet Continuum Modeling of the 1985 April 12 Great Flare of AD Leo". Frontiers in Astronomy and Space Sciences 9. https://doi.org/10.3389/fspas.2022.1034458
 
