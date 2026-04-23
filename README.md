@@ -19,7 +19,8 @@ YMDF stands for **Y**oung **M** **D**warf **F**lare. It consists of two modules:
 
 ## Credits
 
-The module 'flarefinder' is based on [AltaiPony](https://github.com/ekaterinailin/AltaiPony) by [Ekaterina Ilin](https://ekaterinailin.github.io/). This module can work with white light curves in Kepler and TESS, and potentially new surveys as Plato, along with light curves produced by integrating the time-resolved spectra from the surveys working in other wavelength ranges, such as FUV COS-HST. Please, credit this module as Mamonova et al, 2025 ([1](#ref1)) (DOI (pending): 10.1051/0004-6361/202554614) and Ilin et al. (2021) ([2](#ref2)).
+The module 'flarefinder' is based on [AltaiPony](https://github.com/ekaterinailin/AltaiPony) by [Ekaterina Ilin](https://ekaterinailin.github.io/). This module can work with white light curves in Kepler and TESS, and potentially new surveys as Plato, along with light curves produced by integrating the time-resolved spectra from the surveys working in other wavelength ranges, such as FUV COS-HST. Please, credit this module as Mamonova, E., Shan, Y., Kowalski, A. F., Wedemeyer, S., & Werner, S. C. 2025,
+A&A, 700, A53 ([1](#ref1)) and Ilin et al. (2021) ([2](#ref2)).
 
 The module 'model' is an original work. Please, credit the module 'model' as Mamonova et al. 2026, in prep. ([3](#ref3))
 
@@ -31,7 +32,7 @@ De-trends light curves and searches for flare events. Injects synthetic flares a
 
 ### Model
 
-Produces a time-resolved spectrum of flare activity in a Young M Dwarf. Most suitable for studying exoplanet atmospheres orbiting such stars. The reference star is the M dwarf AU Microscopii (M0.5-1, 24 Myr old, $M_\star = 0.5M_\odot$). The spectral part is based on radiative-hydrodynamic (RHD) synthetic models of the M dwarf stellar atmospheres during the flare event (Kowalski et al., 2022 ([4](#ref4)) , 2024 ([5](#ref5)), 2025 ([6](#ref6)) ). The flare frequency distributions (FFDs) used in the model are based on results in Mamonova et al. ([1](#ref1)), and the module offers both single and broken power law relations in FFDs.
+Produces a time-resolved spectrum of flare activity in a Young M Dwarf. Most suitable for studying exoplanet atmospheres orbiting such stars. The reference star is the M dwarf AU Microscopii (M0.5-1, 24 Myr old, $M_\star = 0.5M_\odot$). The spectral part is based on radiative-hydrodynamic (RHD) synthetic models of the M dwarf stellar atmospheres during the flare event (Kowalski et al., 2022 ([4](#ref4)) , 2024 ([5](#ref5)), 2025 ([6](#ref6)) ). The flare frequency distributions (FFDs) used in the model are based on results in Mamonova et al. ([1](#ref1)), and the module offers both single and broken power law relations in FFDs. Please, credit this module as Mamonova, E., Kowalski, A. F., Herbst, K., Wedemeyer, S., & Werner, S. C. 2026, A&A, 705, A165([3](#ref3)).
 
 ## Installing
 
